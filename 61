@@ -1,0 +1,9 @@
+Requirement already satisfied: setuptools in ./curobo_env/lib/python3.10/site-packages (59.6.0)
+Collecting setuptools
+  Using cached setuptools-69.0.2-py3-none-any.whl (819 kB)
+Installing collected packages: setuptools
+  Attempting uninstall: setuptools
+    Found existing installation: setuptools 59.6.0
+    Uninstalling setuptools-59.6.0:
+      Successfully uninstalled setuptools-59.6.0
+Successfully installed setuptools-69.0.2

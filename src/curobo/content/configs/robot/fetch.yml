@@ -1,0 +1,178 @@
+##
+## Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+##
+## NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+## property and proprietary rights in and to this material, related
+## documentation and any modifications thereto. Any use, reproduction,
+## disclosure or distribution of this material and related documentation
+## without an express license agreement from NVIDIA CORPORATION or
+## its affiliates is strictly prohibited.
+##
+
+robot_cfg:
+  kinematics:
+    usd_path: "/home/gaurav/Operating Room Logestics/fetch_description/robots/fetch/fetch.usd"
+    usd_robot_root: "/fetch"
+    isaac_usd_path: ""
+    usd_flip_joints: {}
+    usd_flip_joint_limits: []
+
+    urdf_path: "/home/gaurav/fetch_ws/src/fetch/urdf/fetch.urdf"
+    asset_root_path: "/home/gaurav/fetch_ws/src/fetch/meshes"
+    
+    base_link: "base_link"
+    ee_link: "gripper_link"
+    link_names: null
+    lock_joints: null
+    extra_links: null
+
+    
+    collision_link_names: ["base_link", "estop_link", "torso_fixed_link", "torso_lift_link", "head_pan_link", "head_tilt_link", "shoulder_pan_link", 
+    "shoulder_lift_link", "upperarm_roll_link", "elbow_flex_link", "forearm_roll_link", "wrist_flex_link", "wrist_roll_link", "l_gripper_finger_link", "r_gripper_finger_link"] # List[str]
+    collision_spheres: 
+      base_link:
+        - "center": [0.007, -0.008, 0.198]
+          "radius": 0.319
+      estop_link:
+        - "center": [0.005, -0.001, 0.009]
+          "radius": 0.019
+      torso_fixed_link:
+        - "center": [-0.1, -0.035, 0.12]
+          "radius": 0.168
+        - "center": [-0.1, -0.026, 0.332]
+          "radius": 0.168
+        - "center": [-0.1, 0.047, 0.227]
+          "radius": 0.168
+        - "center": [-0.101, 0.056, 0.049]
+          "radius": 0.167
+        - "center": [-0.1, 0.061, 0.373]
+          "radius": 0.168
+        - "center": [-0.1, -0.064, 0.237]
+          "radius": 0.167
+        - "center": [-0.097, -0.08, 0.051]
+          "radius": 0.165
+        - "center": [-0.094, -0.093, 0.368]
+          "radius": 0.162
+        - "center": [-0.099, 0.079, 0.284]
+          "radius": 0.165
+      torso_lift_link:
+        - "center": [-0.102, -0.023, 0.439]
+          "radius": 0.183
+        - "center": [-0.102, 0.042, 0.128]
+          "radius": 0.183
+        - "center": [-0.101, -0.004, 0.29]
+          "radius": 0.182
+        - "center": [-0.095, -0.091, 0.143]
+          "radius": 0.175
+        - "center": [-0.097, 0.078, 0.454]
+          "radius": 0.178
+        - "center": [-0.098, -0.074, 0.5]
+          "radius": 0.178
+        - "center": [-0.095, 0.085, 0.322]
+          "radius": 0.176
+        - "center": [-0.095, -0.085, 0.323]
+          "radius": 0.176
+      head_pan_link:
+        - "center": [0.059, 0.069, 0.03]
+          "radius": 0.127
+        - "center": [0.053,   -0.075, 0.03]
+          "radius": 0.127
+        - "center": [0.038, 0.116, 0.029]
+          "radius": 0.126
+      head_tilt_link:
+        - "center": [-0.028, -0.029, -0.001]
+          "radius": 0.127
+        - "center": [-0.027, 0.053, 0.004]
+          "radius": 0.127
+      shoulder_pan_link:
+        - "center": [-0.002, -0.012, 0.035]
+          "radius": 0.063
+        - "center": [0.144, -0.031, 0.052]
+          "radius": 0.056
+      shoulder_lift_link:
+        - "center": [0.125, -0.0, 0.0]
+          "radius": 0.071
+        - "center": [0.028, 0.029, -0.015]
+          "radius": 0.053
+      upperarm_roll_link:
+        - "center": [0.129, -0.028, 0.003]
+          "radius": 0.056
+        - "center": [0.024, -0.026, -0.005]
+          "radius": 0.051
+      elbow_flex_link:
+        - "center": [0.117, 0.0, 0.0]
+          "radius": 0.07
+        - "center": [-0.001, 0.032, -0.016]
+          "radius": 0.051
+      forearm_roll_link:
+        - "center": [0.016, -0.029, -0.009]
+          "radius": 0.044
+        - "center": [0.016, 0.008, 0.005]
+          "radius": 0.044
+        - "center": [0.016, -0.032, 0.008]
+          "radius": 0.044
+        - "center": [0.014, 0.003, -0.016]
+          "radius": 0.042
+      wrist_flex_link:
+        - "center": [0.004, 0.004, -0.0]
+          "radius": 0.076
+        - "center": [0.067, -0.001, 0.002]
+          "radius": 0.075
+      wrist_roll_link:
+        - "center": [0.01, 0.015, -0.012]
+          "radius": 0.034
+        - "center": [0.01, -0.011, 0.016]
+          "radius": 0.034
+        - "center": [0.01, 0.013, 0.016]
+          "radius": 0.034
+        - "center": [0.015, 0.009, 0.005]
+          "radius": 0.017
+      l_gripper_finger_link:
+        - "center": [-0.01, 0.009, -0.004]
+          "radius": 0.017
+        - "center": [0.015, 0.009, 0.005]
+          "radius": 0.017
+      r_gripper_finger_link:
+        - "center": [-0.01, -0.009, -0.004]
+          "radius": 0.017
+        - "center": [0.015, -0.009, 0.005]
+          "radius": 0.017
+        - "center": [0.144, -0.031, 0.052]
+          "radius": 0.056
+      
+
+    collision_sphere_buffer: 0.005
+    extra_collision_spheres: {}
+    self_collision_ignore: {
+      "shoulder_pan_link": ["shoulder_lift_link", "upperarm_roll_link"],
+      } # Dict[str, List[str]]
+    self_collision_buffer: {'base_link': 0,
+        'estop_link': 0,
+        'torso_fixed_link': 0,
+        'torso_lift_link': 0,
+        'head_pan_link' : 0,
+        'head_tilt_link': 0, 
+        'shoulder_pan_link': 0,
+        'shoulder_lift_link': 0,
+        'upperarm_roll_link': 0,
+        'elbow_flex_link': 0,
+        'forearm_roll_link': 0,
+        'wrist_flex_link': 0,
+        'wrist_roll_link': 0,
+        'l_gripper_finger_link': 0,
+        'r_gripper_finger_link': 0
+      }
+ # Dict[str, float]
+
+    use_global_cumul: True
+    mesh_link_names: null # List[str]
+    external_asset_path: null # Use this to add path for externally located assets/robot folder.
+
+    cspace:
+      joint_names: ['torso_lift_joint', 'shoulder_pan_joint', 'shoulder_lift_joint', 'upperarm_roll_joint', 'elbow_flex_joint', 'forearm_roll_joint', 'wrist_flex_joint', 'wrist_roll_joint', 'head_pan_joint', 'head_tilt_joint', 'l_gripper_finger_joint', 'r_gripper_finger_joint'] # List[str]
+      retract_config: [0, 0, 0, 0, 0, 0, 0, 0]#[-1.3927, 1.2910, 0.2602, 1.9277, 0.0000, 1.3724, -0.1908, 0, 0, 0, 0] # List[float]
+      null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] # List[str]
+      cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] # List[str]
+      max_jerk: 500.0
+      max_acceleration: 15.0
+      position_limit_clip: 0.1

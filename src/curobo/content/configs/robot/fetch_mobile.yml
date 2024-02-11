@@ -1,0 +1,61 @@
+##
+## Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+##
+## NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+## property and proprietary rights in and to this material, related
+## documentation and any modifications thereto. Any use, reproduction,
+## disclosure or distribution of this material and related documentation
+## without an express license agreement from NVIDIA CORPORATION or
+## its affiliates is strictly prohibited.
+##
+
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    usd_path: "/home/gaurav/Operating Room Logestics/fetch_description/robots/fetch/fetch.usd"
+    isaac_usd_path: ""
+    usd_robot_root: "/fetch"
+    usd_flip_joints: {}
+    usd_flip_joint_limits: []
+
+    urdf_path: "/home/gaurav/fetch_ws/src/fetch/urdf/fetch.urdf"
+    asset_root_path: "/home/gaurav/fetch_ws/src/fetch/meshes"
+    base_link: "torso_lift_link"
+    ee_link: "gripper_link"
+
+    # link_names: null
+    collision_link_names: null
+
+    collision_spheres: "/home/gaurav/Operating Room Logestics/fetch_description/robots/fetch/fetch_collisions.yaml" #"spheres/franka_mesh.yml"
+    collision_sphere_buffer: 0.02
+    
+    use_global_cumul: True
+    self_collision_ignore: {}   
+    self_collision_buffer: null
+    mesh_link_names: null
+    
+    # [
+    #     "torso_lift_joint", "head_pan_joint", "head_tilt_joint",
+    #     "shoulder_pan_joint", "shoulder_lift_joint", "upperarm_roll_joint",
+    #     "elbow_flex_joint", "forearm_roll_joint", "wrist_flex_joint", "wrist_roll_joint",
+    #     "gripper_axis", "r_gripper_finger_joint", "l_gripper_finger_joint", "bellows_joint", 
+    #     "bellows_joint2", "estop_joint", "laser_joint", "torso_fixed_joint",
+    #     "head_camera_joint", "head_camera_rgb_joint", "head_camera_rgb_optical_joint", "head_camera_depth_joint", 
+    #     "head_camera_depth_optical_joint"]
+    
+    # lock_joints: {"r_gripper_finger_joint": 0.04, "l_gripper_finger_joint": 0.04}
+    
+    cspace:
+      joint_names: ["shoulder_pan_joint", 
+                    "shoulder_lift_joint", 
+                    "upperarm_roll_joint", 
+                    "elbow_flex_joint", 
+                    "forearm_roll_joint", 
+                    "wrist_flex_joint", 
+                    "wrist_roll_joint"]
+
+      retract_config: [0, 0, 0, 0, 0, 0, 0]
+      null_space_weight: [1, 1, 1, 1, 1, 1, 1]
+      cspace_distance_weight: [1, 1, 1, 1, 1, 1, 1]
+      max_acceleration: 15.0
+      max_jerk: 500.0

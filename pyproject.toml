@@ -7,7 +7,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 [build-system]
-requires = ["setuptools>=45", "setuptools_scm>=6.2", "wheel", "torch"]
+requires = ["setuptools>=61", "setuptools_scm>=6.2", "wheel", "torch"]
 
 build-backend = "setuptools.build_meta"
 
