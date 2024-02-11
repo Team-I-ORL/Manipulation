@@ -1,10 +1,11 @@
+<?xml version="1.0"?>
 <robot name="fetch">
-  
   <link name="base_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0036 0.0 0.0014" />
       <mass value="70.1294" />
-      <inertia ixx="1.225" ixy="0.0099" ixz="0.0062" iyy="1.2853" iyz="-0.0034" izz="0.987" />
+      <!--inertia ixx="1.225" ixy="0.0099" ixz="0.0062" iyy="1.2853" iyz="-0.0034" izz="0.987" /-->
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0.987" />
     </inertial>
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0" />
@@ -15,10 +16,16 @@
         <color rgba="0.356 0.361 0.376 1" />
       </material>
     </visual>
-    <collision>
+    <!--collision>
       <origin rpy="0 0 0" xyz="0 0 0" />
       <geometry>
         <mesh filename="package://fetch/meshes/base_link_collision.STL" />
+      </geometry>
+    </collision-->
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0.20" />
+      <geometry>
+        <cylinder length="0.33" radius="0.28"/>
       </geometry>
     </collision>
   </link>
@@ -41,18 +48,20 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0" />
       <geometry>
-        <mesh filename="package://fetch/meshes/r_wheel_link_collision.STL" />
+        <!--mesh filename="package://fetch/meshes/r_wheel_link_collision.STL"/-->
+        <sphere radius="0.065"/>
       </geometry>
     </collision>
   </link>
-
+ 
   <joint name="r_wheel_joint" type="continuous">
     <origin rpy="-6.123E-17 0 0" xyz="0.0012914 -0.18738 0.055325" />
     <parent link="base_link" />
     <child link="r_wheel_link" />
     <axis xyz="0 1 0" />
-  <limit effort="8.85" velocity="17.4" /></joint>
-
+    <limit effort="8.85" velocity="17.4" />
+  </joint>
+  
   <link name="l_wheel_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0 0 0" />
@@ -71,7 +80,8 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0" />
       <geometry>
-        <mesh filename="package://fetch/meshes/l_wheel_link_collision.STL" />
+        <!--mesh filename="package://fetch/meshes/l_wheel_link_collision.STL" /-->
+        <sphere radius="0.065"/>
       </geometry>
     </collision>
   </link>
@@ -83,7 +93,7 @@
     <axis xyz="0 1 0" />
     <limit effort="8.85" velocity="17.4" />
   </joint>
-
+  
   <link name="torso_lift_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0013 -0.0009 0.2935" />
@@ -115,7 +125,7 @@
     <limit effort="450.0" lower="0" upper="0.38615" velocity="0.1" />
     <dynamics damping="100.0" />
   </joint>
-
+  
   <link name="head_pan_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0321 0.0161 0.0390" />
@@ -138,15 +148,12 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="head_pan_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.053125 0 0.603001417713939" />
     <parent link="torso_lift_link" />
     <child link="head_pan_link" />
     <axis xyz="0 0 1" />
-    <limit effort="0.32" lower="-1.57" upper="1.57" velocity="1.57" />
-  </joint>
-
+  <limit effort="0.32" lower="-1.57" upper="1.57" velocity="1.57" /></joint>
   <link name="head_tilt_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0081 0.0025 0.0113" />
@@ -169,7 +176,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="head_tilt_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.14253 0 0.057999" />
     <parent link="head_pan_link" />
@@ -177,7 +183,6 @@
     <axis xyz="0 1 0" />
     <limit effort="0.68" lower="-0.76" upper="1.45" velocity="1.57" />
   </joint>
-
   <link name="shoulder_pan_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0927 -0.0056 0.0564" />
@@ -200,7 +205,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="shoulder_pan_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.119525 0 0.34858" />
     <parent link="torso_lift_link" />
@@ -209,7 +213,6 @@
     <dynamics damping="1.0" />
     <limit effort="33.82" lower="-1.6056" upper="1.6056" velocity="1.256" />
   </joint>
-
   <link name="shoulder_lift_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.1432 0.0072 -0.0001" />
@@ -232,7 +235,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="shoulder_lift_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.117 0 0.0599999999999999" />
     <parent link="shoulder_pan_link" />
@@ -241,7 +243,6 @@
     <dynamics damping="1.0" />
     <limit effort="131.76" lower="-1.221" upper="1.518" velocity="1.454" />
   </joint>
-
   <link name="upperarm_roll_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.1165 0.0014 0.0000" />
@@ -264,7 +265,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="upperarm_roll_joint" type="continuous">
     <origin rpy="0 0 0" xyz="0.219 0 0" />
     <parent link="shoulder_lift_link" />
@@ -273,7 +273,6 @@
     <dynamics damping="5.0" />
     <limit effort="76.94" velocity="1.571" />
   </joint>
-
   <link name="elbow_flex_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.1279 0.0073 0.0000" />
@@ -296,7 +295,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="elbow_flex_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.133 0 0" />
     <parent link="upperarm_roll_link" />
@@ -305,7 +303,6 @@
     <dynamics damping="1.0" />
     <limit effort="66.18" lower="-2.251" upper="2.251" velocity="1.521" />
   </joint>
-
   <link name="forearm_roll_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.1097 -0.0266 0.0000" />
@@ -328,7 +325,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="forearm_roll_joint" type="continuous">
     <origin rpy="0 0 0" xyz="0.197 0 0" />
     <parent link="elbow_flex_link" />
@@ -337,7 +333,6 @@
     <dynamics damping="5.0" />
     <limit effort="29.35" velocity="1.571" />
   </joint>
-
   <link name="wrist_flex_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0882 0.0009 -0.0001" />
@@ -360,7 +355,6 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="wrist_flex_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0.1245 0 0" />
     <parent link="forearm_roll_link" />
@@ -369,7 +363,6 @@
     <dynamics damping="1.0" />
     <limit effort="25.7" lower="-2.16" upper="2.16" velocity="2.268" />
   </joint>
-
   <link name="wrist_roll_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0095 0.0004 -0.0002" />
@@ -392,7 +385,6 @@
       </geometry>
     </collision>
   </link>
-  
   <joint name="wrist_roll_joint" type="continuous">
     <origin rpy="0 0 0" xyz="0.1385 0 0" />
     <parent link="wrist_flex_link" />
@@ -401,7 +393,6 @@
     <limit effort="7.36" velocity="2.268" />
     <dynamics damping="5.0" />
   </joint>
-
   <link name="gripper_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0900 -0.0001 -0.0017" />
@@ -421,19 +412,17 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="gripper_axis" type="fixed">
     <origin rpy="0 0 0" xyz="0.16645 0 0" />
     <parent link="wrist_roll_link" />
     <child link="gripper_link" />
     <axis xyz="0 1 0" />
   </joint>
-
   <link name="r_gripper_finger_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.01 0 0" />
       <mass value="0.0798" />
-      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002" />
     </inertial>
     <visual>
       <origin rpy="0 0 0" xyz="0 0.101425 0" />
@@ -444,14 +433,19 @@
         <color rgba="0.356 0.361 0.376 1" />
       </material>
     </visual>
-    <collision>
+    <!--collision>
       <origin rpy="0 0 0" xyz="0 0.101425 0" />
       <geometry>
         <mesh filename="package://fetch/meshes/r_gripper_finger_link.STL" />
       </geometry>
+    </collision-->
+    <collision>
+      <origin rpy="0 0 0" xyz="0 -0.009 0" />
+      <geometry>
+	<box size="0.062 0.013 0.026"/>
+      </geometry>
     </collision>
   </link>
-
   <joint name="r_gripper_finger_joint" type="prismatic">
     <origin rpy="0 0 0" xyz="0 0.015425 0" />
     <parent link="gripper_link" />
@@ -459,12 +453,12 @@
     <axis xyz="0 1 0" />
     <limit effort="60" lower="0.0" upper="0.05" velocity="0.05" /><dynamics damping="100.0" />
   </joint>
-  
+
   <link name="l_gripper_finger_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.01 0 0" />
       <mass value="0.0798" />
-      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002" />
     </inertial>
     <visual>
       <origin rpy="0 0 0" xyz="0 -0.101425 0" />
@@ -475,14 +469,19 @@
         <color rgba="0.356 0.361 0.376 1" />
       </material>
     </visual>
-    <collision>
+    <!--collision>
       <origin rpy="0 0 0" xyz="0 -0.101425 0" />
       <geometry>
         <mesh filename="package://fetch/meshes/l_gripper_finger_link.STL" />
       </geometry>
+    </collision-->
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0.009 0" />
+      <geometry>
+	<box size="0.062 0.013 0.026"/>
+      </geometry>
     </collision>
   </link>
-
   <joint name="l_gripper_finger_joint" type="prismatic">
     <origin rpy="0 0 0" xyz="0 -0.015425 0" />
     <parent link="gripper_link" />
@@ -491,7 +490,7 @@
     <limit effort="60" lower="0.0" upper="0.05" velocity="0.05" /><dynamics damping="100.0" />
   </joint>
 
-  <link name="bellows_link">
+  <!--link name="bellows_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0191320000286228 -1.67219873481315E-16 -0.134861625443387" />
       <mass value="0.169374038216602" />
@@ -512,16 +511,14 @@
         <mesh filename="package://fetch/meshes/bellows_link_collision.STL" />
       </geometry>
     </collision>
-  </link>
-
-  <joint name="bellows_joint" type="prismatic">
+  </link-->
+  <!--joint name="bellows_joint" type="prismatic">
     <origin rpy="0 0 0" xyz="0 0 0" />
     <parent link="torso_lift_link" />
     <child link="bellows_link" />
     <axis xyz="0 0 -1" />
-    <limit effort="5.0" lower="0" upper="0.4" velocity="0.1" /> 
-  </joint>
-  
+  <limit effort="5.0" lower="0" upper="0.4" velocity="0.1" /></joint-->
+
   <link name="bellows_link2">
     <inertial>
       <origin rpy="0 0 0" xyz="0.0191320000286228 -1.67219873481315E-16 -0.134861625443387" />
@@ -544,13 +541,11 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="bellows_joint2" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0" />
     <parent link="torso_lift_link" />
     <child link="bellows_link2" />
   </joint>
-
   <link name="estop_link">
     <inertial>
       <origin rpy="0 0 0" xyz="0.002434512737072 -0.00330608315239905 0.00665139196650039" />
@@ -560,7 +555,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0" />
       <geometry>
-        <mesh filename="package://fetch/meshes/estop_link.dae" />
+        <mesh filename="package://fetch/meshes/estop_link.STL" />
       </geometry>
       <material name="">
         <color rgba="0.8 0 0 1" />
@@ -573,14 +568,12 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="estop_joint" type="fixed">
     <origin rpy="1.5708 0 0" xyz="-0.12465 0.23892 0.31127" />
     <parent link="base_link" />
     <child link="estop_link" />
     <axis xyz="0 0 0" />
   </joint>
-
   <link name="laser_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0306228970175641 0.0007091682908278 0.0551974119471302" />
@@ -603,14 +596,12 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="laser_joint" type="fixed">
     <origin rpy="3.14159265359 0 0" xyz="0.235 0 0.2878" />
     <parent link="base_link" />
     <child link="laser_link" />
     <axis xyz="0 0 0" />
   </joint>
-
   <link name="torso_fixed_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0722 0.0057 0.2656" />
@@ -633,51 +624,52 @@
       </geometry>
     </collision>
   </link>
-
   <joint name="torso_fixed_joint" type="fixed">
     <origin rpy="-6.12303176911189E-17 0 0" xyz="-0.086875 0 0.377425" />
     <parent link="base_link" />
     <child link="torso_fixed_link" />
     <axis xyz="0 1 0" />
   </joint>
-
-  <link name="head_camera_link" />
-
+  <!-- <link name="head_camera_link" />
   <joint name="head_camera_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0.055 0 0.0225" />
     <parent link="head_tilt_link" />
     <child link="head_camera_link" />
   </joint>
-  
   <link name="head_camera_rgb_frame" />
-  
   <joint name="head_camera_rgb_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0.02 0" />
     <parent link="head_camera_link" />
     <child link="head_camera_rgb_frame" />
   </joint>
-
   <link name="head_camera_rgb_optical_frame" />
-  
   <joint name="head_camera_rgb_optical_joint" type="fixed">
-    <origin rpy="-1.57079632679 0 -1.57079632679" xyz="0 0 0" />
+    <origin rpy="1.57079632679 0 -1.57079632679" xyz="0 0 0" />
     <parent link="head_camera_rgb_frame" />
     <child link="head_camera_rgb_optical_frame" />
   </joint>
-  
   <link name="head_camera_depth_frame" />
-  
   <joint name="head_camera_depth_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0.045 0" />
     <parent link="head_camera_link" />
     <child link="head_camera_depth_frame" />
   </joint>
-  
   <link name="head_camera_depth_optical_frame" />
-  
   <joint name="head_camera_depth_optical_joint" type="fixed">
     <origin rpy="-1.57079632679 0 -1.57079632679" xyz="0 0 0" />
     <parent link="head_camera_depth_frame" />
     <child link="head_camera_depth_optical_frame" />
-  </joint>
+ </joint> -->
+
+  <!-- <gazebo reference="head_camera_rgb_optical_frame">
+    <sensor:camera name="rgb">
+      <imageFormat>R8G8B8</imageFormat>
+      <imageSize>192 128</imageSize>
+      <hfov>50</hfov>
+      <nearClip>0.1</nearClip>
+      <farClip>100</farClip>
+      <updateRate>60.0</updateRate>
+    </sensor:camera>
+  </gazebo> -->
+
 </robot>
