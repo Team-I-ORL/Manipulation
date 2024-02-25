@@ -5,11 +5,11 @@ import os
 
 def generate_launch_description():
     
-    #pkg_path = launch_ros.substitutions.FindPackage(package='fetch_description').find('fetch_description')
+    # pkg_path = launch_ros.substitutions.FindPackage(package='fetch_description').find('fetch_description')
     #print(pkg_path)
-    #urdf_model_path = os.path.join(pkg_path, 'urdf/fetch.urdf')
-    urdf_model_path = '/home/siddharth/humble_ws/src/fetch_description/urdf/fetch.urdf'
-    rviz_path = '/home/siddharth/humble_ws/src/fetch_description/rviz/display_rviz.rviz'
+    # urdf_model_path = os.path.join(pkg_path, 'urdf/fetch.urdf')
+    urdf_model_path = '/home/siddharth/ws_moveit/src/Manipulation/fetch_description/urdf/fetch_moveit_try.urdf'
+    rviz_path = '/home/siddharth/ws_moveit/src/Manipulation/fetch_description/rviz/display_rviz.rviz'
 
     with open(urdf_model_path, 'r') as infp:
         robot_desc = infp.read()

@@ -21,10 +21,15 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
 
     # Command-line arguments
-    rviz_config_arg = DeclareLaunchArgument(
-        "rviz_config",
-        default_value="moveit.rviz",
-        description="RViz configuration file",
+    # rviz_config_arg = DeclareLaunchArgument(
+    #     "rviz_config",
+    #     default_value="moveit.rviz",
+    #     description="RViz configuration file",
+    # )
+    rviz_config_file = os.path.join(
+        get_package_share_directory("fetch_moveit_config"),
+        "config",
+        "moveit.rviz",
     )
 
     # db_arg = DeclareLaunchArgument(
@@ -33,7 +38,7 @@ def generate_launch_description():
 
     ros2_control_hardware_type = DeclareLaunchArgument(
         "ros2_control_hardware_type",
-        default_value="mock_components",
+        default_value="isaac",
         description="ROS 2 control hardware interface type to use for the launch file -- possible values: [mock_components, isaac]",
     )
 
@@ -77,7 +82,7 @@ def generate_launch_description():
         executable="rviz2",
         name="rviz2",
         output="log",
-        arguments=["-d", rviz_config],
+        arguments=["-d", rviz_config_file],
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
@@ -159,7 +164,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            rviz_config_arg,
+            # rviz_config_arg,
             # db_arg,
             ros2_control_hardware_type,
             rviz_node,
