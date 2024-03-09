@@ -4,14 +4,15 @@ moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControll
 
 moveit_simple_controller_manager:
   controller_names:
-    - fetch_arm_controller
+    - arm_controller
     - hand_controller
 
-  fetch_arm_controller:
+  arm_controller:
     type: FollowJointTrajectory
     action_ns: follow_joint_trajectory
     default: true
     joints:
+      - shoulder_pan_joint
       - shoulder_lift_joint
       - upperarm_roll_joint
       - elbow_flex_joint

@@ -21,15 +21,10 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
 
     # Command-line arguments
-    # rviz_config_arg = DeclareLaunchArgument(
-    #     "rviz_config",
-    #     default_value="moveit.rviz",
-    #     description="RViz configuration file",
-    # )
-    rviz_config_file = os.path.join(
-        get_package_share_directory("fetch_moveit_config"),
-        "config",
-        "moveit.rviz",
+    rviz_config_arg = DeclareLaunchArgument(
+        "rviz_config",
+        default_value="moveit.rviz",
+        description="RViz configuration file",
     )
 
     # db_arg = DeclareLaunchArgument(
@@ -53,9 +48,9 @@ def generate_launch_description():
             },
         )
         .robot_description_semantic(file_path="config/fetch.srdf")
-        .planning_scene_monitor(
-            publish_robot_description=True, publish_robot_description_semantic=True
-        )
+        #.planning_scene_monitor(
+        #    publish_robot_description=True, publish_robot_description_semantic=True
+        #)
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .planning_pipelines(
             pipelines=["ompl", "chomp", "pilz_industrial_motion_planner", "stomp"]
@@ -82,7 +77,7 @@ def generate_launch_description():
         executable="rviz2",
         name="rviz2",
         output="log",
-        arguments=["-d", rviz_config_file],
+        arguments=["-d", rviz_config],
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
@@ -139,7 +134,7 @@ def generate_launch_description():
     panda_arm_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["fetch_arm_controller", "-c", "/controller_manager"],
+        arguments=["arm_controller", "-c", "/controller_manager"],
     )
 
     hand_controller_spawner = Node(
@@ -164,7 +159,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            # rviz_config_arg,
+            rviz_config_arg,
             # db_arg,
             ros2_control_hardware_type,
             rviz_node,

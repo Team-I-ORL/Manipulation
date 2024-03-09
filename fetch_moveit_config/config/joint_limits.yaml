@@ -33,6 +33,11 @@ joint_limits:
     max_velocity: 1.454
     has_acceleration_limits: true
     max_acceleration: 2.1
+  shoulder_pan_joint:
+    has_velocity_limits: true
+    max_velocity: 1.256
+    has_acceleration_limits: true
+    max_acceleration: 2.1
   upperarm_roll_joint:
     has_velocity_limits: true
     max_velocity: 1.571
