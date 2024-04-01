@@ -11,6 +11,11 @@ find_package(ament_cmake REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+install(PROGRAMS
+  scripts/move_sample.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(
   DIRECTORY launch meshes urdf rviz 
   DESTINATION share/${PROJECT_NAME}
