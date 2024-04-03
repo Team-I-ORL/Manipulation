@@ -17,7 +17,7 @@
   <author email="s@g.com">s</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
+  <depend> orbiter_bt</depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>
   <exec_depend>moveit_planners</exec_depend>
