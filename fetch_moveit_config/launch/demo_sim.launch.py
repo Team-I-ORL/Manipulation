@@ -41,11 +41,11 @@ def generate_launch_description():
         MoveItConfigsBuilder("fetch")
         .robot_description(
             file_path="config/fetch.urdf.xacro",
-            mappings={
-                "ros2_control_hardware_type": LaunchConfiguration(
-                    "ros2_control_hardware_type"
-                )
-            },
+            # mappings={
+            #     "ros2_control_hardware_type": LaunchConfiguration(
+            #         "ros2_control_hardware_type"
+            #     )
+            # },
         )
         .robot_description_semantic(file_path="config/fetch.srdf")
         .planning_scene_monitor(
@@ -53,12 +53,29 @@ def generate_launch_description():
            publish_geometry_updates= True, publish_state_updates= True, 
            publish_transforms_updates= True
         )
+        .moveit_cpp(file_path="/home/siddharth/ws_moveit/src/Manipulation/fetch_moveit_config/config/motion_planning_python_api_tutorial.yaml")
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .planning_pipelines(
             pipelines=["ompl", "chomp", "pilz_industrial_motion_planner", "stomp"]
         )
         .to_moveit_configs()
     )
+
+
+    example_file = DeclareLaunchArgument(
+        "example_file",
+        default_value="pr4.py",
+        description="Python API tutorial file name",
+    )
+
+    moveit_py_node = Node(
+        name="moveit_py",
+        package="fetch_description",
+        executable=LaunchConfiguration("example_file"),
+        output="both",
+        parameters=[moveit_config.to_dict()],
+    )
+
 
     #Start the actual move_group node/action server
     move_group_node = Node(
@@ -162,6 +179,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             rviz_config_arg,
+            example_file,
+            moveit_py_node,
             # db_arg,
             ros2_control_hardware_type,
             rviz_node,

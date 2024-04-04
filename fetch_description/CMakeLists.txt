@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
   scripts/move_sample.py
+  scripts/pr4.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
