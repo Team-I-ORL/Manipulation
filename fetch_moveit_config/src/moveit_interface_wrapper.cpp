@@ -3,7 +3,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 
-#define PLANNINGGROUP "manipulator"
+#define PLANNINGGROUP "arm"
 
 class MoveArmServer : public rclcpp::Node
 {
@@ -17,6 +17,7 @@ class MoveArmServer : public rclcpp::Node
     {   
         RCLCPP_INFO(get_logger(), "Move Arm Server Created");
         service = this->create_service<orbiter_bt::srv::MoveArm>("move_arm", std::bind(&MoveArmServer::moveArm_callback, this, std::placeholders::_1, std::placeholders::_2));
+        RCLCPP_INFO(get_logger(), "Planning frame: %s", move_group.getPlanningFrame().c_str());
     }
     void moveArm_callback(const std::shared_ptr<orbiter_bt::srv::MoveArm::Request> request,
                           std::shared_ptr<orbiter_bt::srv::MoveArm::Response> response)

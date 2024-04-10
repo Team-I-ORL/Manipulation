@@ -12,7 +12,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
-from launch_ros.actions import Node
+from launch_ros.actions import Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -66,7 +66,7 @@ def generate_launch_description():
         executable="move_group",
         output="screen",
         parameters=[moveit_config.to_dict()],
-        arguments=["--ros-args", "--log-level", "info"],
+        arguments=["--ros-args", "--log-level", "info", "--use_sim_time", "True"],
     )
 
     # RViz
@@ -123,15 +123,15 @@ def generate_launch_description():
         output="screen",
     )
 
-    joint_state_broadcaster_spawner = Node(
-         package="controller_manager",
-         executable="spawner",
-         arguments=[
-             "joint_state_broadcaster",
-             "--controller-manager",
-             "/controller_manager",
-         ],
-     )
+    # joint_state_broadcaster_spawner = Node(
+    #      package="controller_manager",
+    #      executable="spawner",
+    #      arguments=[
+    #          "joint_state_broadcaster",
+    #          "--controller-manager",
+    #          "/controller_manager",
+    #      ],
+    #  )
 
     panda_arm_controller_spawner = Node(
         package="controller_manager",
@@ -161,6 +161,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            SetParameter(name='use_sim_time', value=True),
             rviz_config_arg,
             # db_arg,
             ros2_control_hardware_type,
@@ -169,7 +170,7 @@ def generate_launch_description():
             robot_state_publisher,
             move_group_node,
             ros2_control_node,
-            joint_state_broadcaster_spawner,
+            # joint_state_broadcaster_spawner,
             panda_arm_controller_spawner,
             hand_controller_spawner,
             #mongodb_server_node,

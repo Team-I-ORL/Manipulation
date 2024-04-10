@@ -48,9 +48,11 @@ def generate_launch_description():
             },
         )
         .robot_description_semantic(file_path="config/fetch.srdf")
-        #.planning_scene_monitor(
-        #    publish_robot_description=True, publish_robot_description_semantic=True
-        #)
+        .planning_scene_monitor(
+           publish_robot_description=True, publish_robot_description_semantic=True,
+           publish_geometry_updates= True, publish_state_updates= True, 
+           publish_transforms_updates= True
+        )
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .planning_pipelines(
             pipelines=["ompl", "chomp", "pilz_industrial_motion_planner", "stomp"]
