@@ -492,12 +492,29 @@
     <limit effort="60" lower="0.0" upper="0.05" velocity="0.05" /><dynamics damping="100.0" />
   </joint>
   
-  <!-- <link name="fetch_tool_link"/>
+  <!--link name="fetch_tool_link">
+  <visual>
+      <origin rpy="0 0 1.5708" xyz="0.115 -0.15 -0.065" />
+      <geometry>
+        <mesh filename="package://fetch_description/meshes/bucket.STL" scale="0.01 0.01 0.01"/>
+      </geometry>
+      <material name="">
+        <color rgba="1 0 0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 1.5708" xyz="0.115 -0.15 -0.065" />
+      <geometry>
+        <mesh filename="package://fetch_description/meshes/bucket.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+    </link>
+  
   <joint name="fetch_tool_fixed_joint" type="fixed">
-    <origin rpy="0 1.57079632679 0" xyz="0 0 0"/>
+    <origin rpy="0 1.5708 0" xyz="-0.1 0 -0.195"/>
     <parent link="gripper_link"/>
     <child link="fetch_tool_link"/>
-  </joint> -->
+  </joint-->
 
   <link name="bellows_link">
     <inertial>
