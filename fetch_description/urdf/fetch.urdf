@@ -492,7 +492,7 @@
     <limit effort="60" lower="0.0" upper="0.05" velocity="0.05" /><dynamics damping="100.0" />
   </joint>
   
-  <!--link name="fetch_tool_link">
+  <link name="fetch_tool_link">
   <visual>
       <origin rpy="0 0 1.5708" xyz="0.115 -0.15 -0.065" />
       <geometry>
@@ -514,7 +514,7 @@
     <origin rpy="0 1.5708 0" xyz="-0.1 0 -0.195"/>
     <parent link="gripper_link"/>
     <child link="fetch_tool_link"/>
-  </joint-->
+  </joint>
 
   <link name="bellows_link">
     <inertial>

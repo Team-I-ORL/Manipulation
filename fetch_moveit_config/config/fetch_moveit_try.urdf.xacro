@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fetch_moveit_try">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Import fetch_moveit_try urdf file -->
+    <xacro:include filename="$(find fetch_description)/urdf/fetch_moveit_try.urdf" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="fetch_moveit_try.ros2_control.xacro" />
+
+
+    <xacro:fetch_moveit_try_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>
