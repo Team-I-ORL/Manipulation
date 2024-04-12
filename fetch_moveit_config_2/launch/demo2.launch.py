@@ -127,7 +127,7 @@ def generate_launch_description():
 
     # ros2_control using FakeSystem as hardware
     ros2_controllers_path = os.path.join(
-        get_package_share_directory("fetch_moveit_config"),
+        get_package_share_directory("fetch_moveit_config_2"),
         "config",
         "ros2_controllers.yaml",
     )
@@ -141,15 +141,15 @@ def generate_launch_description():
         output="screen",
     )
 
-    joint_state_broadcaster_spawner = Node(
-         package="controller_manager",
-         executable="spawner",
-         arguments=[
-             "joint_state_broadcaster",
-             "--controller-manager",
-             "/controller_manager",
-         ],
-     )
+    # joint_state_broadcaster_spawner = Node(
+    #      package="controller_manager",
+    #      executable="spawner",
+    #      arguments=[
+    #          "joint_state_broadcaster",
+    #          "--controller-manager",
+    #          "/controller_manager",
+    #      ],
+    #  )
 
     panda_arm_controller_spawner = Node(
         package="controller_manager",
@@ -160,7 +160,7 @@ def generate_launch_description():
     hand_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["hand_controller", "-c", "/controller_manager"],
+        arguments=["gripper_controller", "-c", "/controller_manager"],
     )
 
     # Warehouse mongodb server
@@ -189,7 +189,7 @@ def generate_launch_description():
             robot_state_publisher,
             move_group_node,
             ros2_control_node,
-            joint_state_broadcaster_spawner,
+            # joint_state_broadcaster_spawner,
             panda_arm_controller_spawner,
             hand_controller_spawner,
             #mongodb_server_node,
