@@ -6,7 +6,7 @@
   <description>
      An automatically generated package with all the configuration and launch files for using the fetch with the MoveIt Motion Planning Framework
   </description>
-  <maintainer email="s@g.com">s</maintainer>
+  <maintainer email="S@gmail.com">s</maintainer>
 
   <license>BSD-3-Clause</license>
 
@@ -14,10 +14,10 @@
   <url type="bugtracker">https://github.com/ros-planning/moveit2/issues</url>
   <url type="repository">https://github.com/ros-planning/moveit2</url>
 
-  <author email="s@g.com">s</author>
+  <author email="S@gmail.com">s</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <depend> orbiter_bt</depend>
+
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>
   <exec_depend>moveit_planners</exec_depend>
