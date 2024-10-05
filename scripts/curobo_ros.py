@@ -255,7 +255,7 @@ def main(args=None):
                         joint_names=sim_js_names,
                     )
                     cu_js = cu_js.get_ordered_joint_state(curobo_node.curoboMotion.kinematics.joint_names)
-                    articulation_action = ArticulationAction(joint_positions=point)
+                    articulation_action = ArticulationAction(joint_positions=positions)
                     articulation_controller.apply_action(articulation_action)
 
                     for _ in range(10):
