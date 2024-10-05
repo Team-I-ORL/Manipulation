@@ -1,19 +1,19 @@
-import os
 import argparse
-
+import os
 import rclpy
 from rclpy.node import Node
 import numpy as np
+import threading
 # Import ROS2 message types
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import PoseStamped
+from target_client.srv import TargetPose
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
-
 # Import curobo utilities (update these imports as needed)
 from curobo.util_file import get_robot_configs_path, get_assets_path
-
 # Import your CuroboMotionPlanner class
 from CuroboMotionPlanner import CuroboMotionPlanner
+from curobo.types.state import JointState as JointStateC
 
 class CuroboTrajectoryNode(Node):
     def __init__(self, cfg):
@@ -22,26 +22,29 @@ class CuroboTrajectoryNode(Node):
         # Initialize CuroboMotionPlanner
         self.curoboMotion = CuroboMotionPlanner(cfg)
         self.curoboMotion.setup_motion_planner()  # Warmup happens here
+        self.world_cfg = self.curoboMotion.world_cfg
+        self.robot_cfg = self.curoboMotion.robot_cfg
+        self.j_names = self.curoboMotion.j_names
         self.latest_joint_state = None
-        self.pending_pose = None   
-        # Publishers and Subscribers
-        # Subscriber for goal pose messages
-        self.pose_subscriber = self.create_subscription(
-            Pose,
-            'desired_pose',
-            self.pose_callback,
-            10)
+        self.start_js = None
+
+        # Create the service
+        self.target_srv = self.create_service(TargetPose, 'target_pose', self.target_pose_callback)
+
         # Subscriber for joint state messages
         self.joint_state_subscriber = self.create_subscription(
             JointState,
             'joint_states',
             self.joint_state_callback,
             10)
+        
         # Publisher for joint trajectory messages
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory,
             'joint_trajectory',
             10)
+        self.lock = threading.Lock()
+        self.published_trajectory = None
 
         self.get_logger().info('Curobo Trajectory Node has been started.')
 
@@ -49,18 +52,6 @@ class CuroboTrajectoryNode(Node):
         # Update the latest joint state
         self.latest_joint_state = msg
         self.get_logger().debug('Updated latest joint state.')
-
-        # If there is a pending desired pose, process it now
-        if self.pending_pose is not None:
-            self.get_logger().info('Processing pending desired pose.')
-            initial_js = self.get_current_joint_positions()
-            if initial_js is None:
-                self.get_logger().error('Cannot generate trajectory without current joint positions.')
-                return
-
-            self.process_pose(self.pending_pose, initial_js)
-            # Clear the pending pose
-            self.pending_pose = None
 
     def get_current_joint_positions(self):
         if self.latest_joint_state is None:
@@ -79,47 +70,46 @@ class CuroboTrajectoryNode(Node):
 
         return initial_js
 
-
-    def pose_callback(self, msg):
-        self.get_logger().info('Received desired pose.')
-
-        if self.latest_joint_state is None:
-            self.get_logger().warn('No joint state available yet. Storing desired pose for later processing.')
-            self.pending_pose = msg
-            return
-
-        # Extract current joint positions
+    def target_pose_callback(self, request, response):
+        response.success = False
+        request_pose = request.target_pose
         initial_js = self.get_current_joint_positions()
-        if initial_js is None:
+
+        if request_pose is None and initial_js is None:
             self.get_logger().error('Cannot generate trajectory without current joint positions.')
-            return
+            response.success = False
+            self.published_trajectory = None
+            return response
+            
+        target_pose = self.convert_pose_to_target_format(request_pose)
 
-        # Process the pose
-        self.process_pose(msg, initial_js)
-
-    def process_pose(self, msg, initial_js):
-        # Convert Pose message to the format expected by CuroboMotionPlanner
-        target_pose = self.convert_pose_to_target_format(msg)
-
-        # Generate trajectory for a single goal
         trajectory = self.curoboMotion.generate_trajectory(
             initial_js=initial_js,
             goal_ee_pose=target_pose)
-
-        if trajectory is None:
+        
+        if trajectory.get('success') is False:
             self.get_logger().error('Failed to generate trajectory.')
-            return
-
-        # Publish the trajectory
+            response.success = False
+            self.published_trajectory = None
+            return response
+        
         joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
+        self.published_trajectory = joint_trajectory_msg
         self.trajectory_publisher.publish(joint_trajectory_msg)
+        self.start_js = initial_js
+
         self.get_logger().info('Published joint trajectory.')
+        response.success = True
+        return response
 
     @staticmethod
     def convert_pose_to_target_format(pose_msg):
-        # Convert ROS2 Pose message to the format expected by curoboMotion
-        pose_curobo = [pose_msg.position.x, pose_msg.position.y, pose_msg.position.z,
-                       pose_msg.orientation.w, pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z] 
+        # Extract the pose from PoseStamped
+        pose = pose_msg.pose
+
+        # Convert ROS2 Pose to the format expected by CuroboMotionPlanner
+        pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
+                       pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
         
         return pose_curobo
 
@@ -147,9 +137,13 @@ class CuroboTrajectoryNode(Node):
 
             # Handle positions
             positions = positions_list[idx]
+            velocities = velocities_list[idx]
+            accelerations = accelerations_list[idx]
 
             positions = [float(p) for p in positions]
             traj_point.positions = positions
+            traj_point.velocities = velocities
+            traj_point.accelerations = accelerations
 
             # Set time_from_start
             time_from_start += interpolation_dt
@@ -169,16 +163,111 @@ def main(args=None):
         default="fetch.yml", 
         help="Configuration file to load"
     )
+    parser.add_argument(
+        "--sim",
+        action="store_true",
+        help="Run in simulation mode",
+        default=False
+    )
     parsed_args = parser.parse_args()
-
+    
     # Initialize ROS2
     rclpy.init(args=args)
 
     # Create the node
     curobo_node = CuroboTrajectoryNode(parsed_args.cfg)
+    if not parsed_args.sim:
+        # Run the node
+        rclpy.spin(curobo_node)
+    else:
+        curobo_node.get_logger().info('Running in simulation mode.')
+        spin_thread = threading.Thread(target=rclpy.spin, args=(curobo_node,), daemon=True)
+        spin_thread.start()
 
-    # Spin the node (this provides the main loop)
-    rclpy.spin(curobo_node)
+        import torch
+        a = torch.zeros(4, device="cuda:0")
+
+        from omni.isaac.kit import SimulationApp
+        simulation_app = SimulationApp({"headless": False})
+
+        from omni.isaac.core import World
+        from omni.isaac.core.utils.types import ArticulationAction
+        from helper import add_extensions, add_robot_to_scene
+        from curobo.util.usd_helper import UsdHelper
+        import numpy as np
+        from typing import List
+        import carb
+
+
+        sim_world = World(stage_units_in_meters=1.0)
+        stage = sim_world.stage
+        xform = stage.DefinePrim("/World", "Xform")
+        stage.SetDefaultPrim(xform)
+        stage.DefinePrim("/curobo", "Xform")
+
+        add_extensions(simulation_app)
+
+        usd_help = UsdHelper()
+
+        usd_help.load_stage(sim_world.stage)
+
+        usd_help.add_world_to_stage(curobo_node.world_cfg, base_frame="/World")
+        robot, robot_prim_path = add_robot_to_scene(curobo_node.robot_cfg, sim_world)
+        articulation_controller = robot.get_articulation_controller()
+
+        i = 0
+
+        while simulation_app.is_running():
+            with curobo_node.lock:
+                solutions = curobo_node.published_trajectory
+                q_start = curobo_node.start_js
+                
+            if solutions:
+                print(solutions)
+                curobo_node.get_logger().info(f"Executing Trajectory {i}")
+                if not sim_world.is_playing():
+                    sim_world.play()
+                step_index = sim_world.current_time_step_index
+                if step_index < 2:
+                    sim_world.reset()
+                    robot._articulation_view.initialize()
+                    idx_list = [robot.get_dof_index(x) for x in curobo_node.j_names]
+                    robot.set_joint_positions(q_start, idx_list)
+
+                
+                if step_index < 20:
+                    continue
+
+                for point in solutions.points:
+                    positions = point.positions
+                    sim_js = robot.get_joints_state()
+                    sim_js_names = robot.dof_names
+                    
+                    if np.any(np.isnan(sim_js.positions)):
+                        carb.log_warn("Isaac Sim has returned NAN joint position values.")
+                    tensor_args = curobo_node.curoboMotion.tensor_args
+
+                    cu_js = JointStateC(
+                        position=tensor_args.to_device(sim_js.positions),
+                        velocity=tensor_args.to_device(sim_js.velocities),
+                        acceleration=tensor_args.to_device(sim_js.velocities) * 0.0,
+                        jerk=tensor_args.to_device(sim_js.velocities) * 0.0,
+                        joint_names=sim_js_names,
+                    )
+                    cu_js = cu_js.get_ordered_joint_state(curobo_node.curoboMotion.kinematics.joint_names)
+                    articulation_action = ArticulationAction(joint_positions=point)
+                    articulation_controller.apply_action(articulation_action)
+
+                    for _ in range(10):
+                        sim_world.step(render=True)
+                        # After executing the trajectory, reset the published trajectory
+                with curobo_node.lock:
+                    curobo_node.published_trajectory = None
+                curobo_node.get_logger().info("Trajectory execution completed.")
+            else:
+                curobo_node.get_logger().info("No Trajectory to execute")
+            
+            simulation_app.update()
 
     # Clean up
     curobo_node.destroy_node()
