@@ -17,9 +17,8 @@ from CuroboMotionPlanner import CuroboMotionPlanner
 from curobo.types.state import JointState as JointStateC
 
 class CuroboTrajectoryNode(Node):
-    def __init__(self, cfg, shared_data):
+    def __init__(self, cfg):
         super().__init__('curobo_trajectory_node')
-        self.shared_data = shared_data
         # Initialize CuroboMotionPlanner
         self.curoboMotion = CuroboMotionPlanner(cfg)
         self.curoboMotion.setup_motion_planner()  # Warmup happens here
@@ -30,9 +29,7 @@ class CuroboTrajectoryNode(Node):
         self.j_names = self.curoboMotion.j_names
         self.latest_joint_state = None
         self.start_js = None
-        self.shared_data.world_cfg = self.world_cfg
-        self.shared_data.robot_cfg = self.robot_cfg
-        self.shared_data.j_names = self.j_names
+
         # Create the service
         self.target_srv = self.create_service(TargetPose, 'target_pose', self.target_pose_callback)
 
@@ -62,7 +59,6 @@ class CuroboTrajectoryNode(Node):
         self.get_logger().info('Curobo Trajectory Node has been started.')
     def gripper_status_callback(self, msg):
         self.gripper_status = msg.data
-        self.shared_data.gripper_status = msg.data
         
     def joint_state_callback(self, msg):
         # Update the latest joint state
@@ -81,7 +77,6 @@ class CuroboTrajectoryNode(Node):
         try:
             initial_js = [joint_positions[joint_name] for joint_name in self.curoboMotion.j_names]
             print(self.curoboMotion.j_names)
-            self.shared_data.start_js = initial_js
         except KeyError as e:
             self.curoboMotion.j_names
             self.get_logger().error(f'Joint name {e} not found in joint states.')
@@ -115,7 +110,6 @@ class CuroboTrajectoryNode(Node):
         joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
         self.published_trajectory = joint_trajectory_msg
         self.trajectory_publisher.publish(joint_trajectory_msg)
-        self.shared_data.published_trajectory = joint_trajectory_msg
         self.start_js = initial_js
 
         self.get_logger().info('Published joint trajectory.')
@@ -173,4 +167,19 @@ class CuroboTrajectoryNode(Node):
             joint_trajectory_msg.points.append(traj_point)
 
         return joint_trajectory_msg
+
+if __name__ == "__main__":
+    rclpy.init()
+    cfg = "fetch.yml"
+    curobo_node = CuroboTrajectoryNode(cfg)
+    try:
+        rclpy.spin(curobo_node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Ensure proper shutdown
+        curobo_node.destroy_node()
+        rclpy.shutdown()
+
+
 
