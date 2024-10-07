@@ -4,8 +4,7 @@ import torch
 from typing import List, Optional
 
 # TODO: POSE CONSTRAINTS FOR DIFFERENT FLAGS (OPERATION PICK OR PLACE)
-# ROS FLAG OF SUCTION GRIPPER STATUS (TRUE FOR SUCKED)
-# ROS FLAG FOR TYPE OF OPERATION.
+# Implemented picking/placing pose cost metric based on suction_status (NEED TO TEST)
 
 from curobo.geom.types import WorldConfig, Cuboid, Cylinder
 from curobo.geom.sphere_fit import SphereFitType
@@ -86,10 +85,14 @@ class CuroboMotionPlanner:
         print("CuRobo is Ready")
 
         # MAY NEED BELOW        
-        pose_cost = PoseCostMetric(
+        self.placing_cost = PoseCostMetric(
             hold_partial_pose = True,
             hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 0, 0, 0, 0]),
         ) # [rx, ry, rz, tx, ty, tz]
+
+        self.picking_cost = PoseCostMetric.create_grasp_approach_metric(
+                offset_position=0.1, tstep_fraction=0.8, linear_axis=2
+            )
         
         config_args = {
             'max_attempts': 100,
@@ -106,10 +109,13 @@ class CuroboMotionPlanner:
     
     def generate_trajectory(self,
                        initial_js: List[float],
-                       goal_ee_pose: Optional[List[float]] = None,
-                       goal_js: Optional[List[float]] = None,
+                       goal_ee_pose: List[float] = None,
+                    #    goal_js: Optional[List[float]] = None,
+                       suction_status: bool = False,
     ):
-        if goal_ee_pose is not None and goal_js is None:
+        # if goal_ee_pose is not None and goal_js is None:
+        if goal_ee_pose is not None:
+
             initial_js = JointState.from_position(
                 position=self.tensor_args.to_device([initial_js]),
                 joint_names=self.j_names[0 : len(initial_js)],
@@ -121,6 +127,11 @@ class CuroboMotionPlanner:
                 quaternion=self.tensor_args.to_device(goal_ee_pose[3:]),
             )
             
+            if suction_status: # IF suction gripper is operating, initialize picking cost (constrain orientation)
+                self.plan_config.pose_cost_metric = self.picking_cost
+            else:   # IF suction is not operating, initialize placing cost (approach object in z direction)
+                self.plan_config.pose_cost_metric = self.placing_cost
+
             try:
                 motion_gen_result = self.motion_gen.plan_single(
                     initial_js, goal_pose, self.plan_config
@@ -131,25 +142,25 @@ class CuroboMotionPlanner:
                 print("Error in planning trajectory: ", e)
                 return None
             
-        elif goal_js is not None and goal_ee_pose is None:
-            initial_js = JointState.from_position(
-                position=self.tensor_args.to_device([initial_js]),
-                joint_names=self.j_names[0 : len(initial_js)],
-            )        
+        # elif goal_js is not None and goal_ee_pose is None:
+        #     initial_js = JointState.from_position(
+        #         position=self.tensor_args.to_device([initial_js]),
+        #         joint_names=self.j_names[0 : len(initial_js)],
+        #     )        
             
-            goal_js = JointState.from_position(
-                position=self.tensor_args.to_device([goal_js]),
-                joint_names=self.j_names[0 : len(goal_js)],
-            )
+        #     goal_js = JointState.from_position(
+        #         position=self.tensor_args.to_device([goal_js]),
+        #         joint_names=self.j_names[0 : len(goal_js)],
+        #     )
             
-            try:
-                motion_gen_result = self.motion_gen.plan_single_js(
-                    initial_js, goal_js, self.plan_config
-                )
-                reach_succ = motion_gen_result.success.item()
+        #     try:
+        #         motion_gen_result = self.motion_gen.plan_single_js(
+        #             initial_js, goal_js, self.plan_config
+        #         )
+        #         reach_succ = motion_gen_result.success.item()
 
-            except:
-                return None
+        #     except:
+        #         return None
         else:
             raise ValueError("Either goal_js or goal_ee_pose must be provided.")
         

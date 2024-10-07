@@ -99,9 +99,10 @@ class CuroboTrajectoryNode(Node):
 
         trajectory = self.curoboMotion.generate_trajectory(
             initial_js=initial_js,
-            goal_ee_pose=target_pose)
+            goal_ee_pose=target_pose,
+            suction_status=self.gripper_status)
 
-        if trajectory.get('success') is False:
+        if trajectory is None:
             self.get_logger().error('Failed to generate trajectory.')
             response.success = False
             self.published_trajectory = None
