@@ -3,6 +3,10 @@ import torch
 # Standard Library
 from typing import List, Optional
 
+# TODO: POSE CONSTRAINTS FOR DIFFERENT FLAGS (OPERATION PICK OR PLACE)
+# ROS FLAG OF SUCTION GRIPPER STATUS (TRUE FOR SUCKED)
+# ROS FLAG FOR TYPE OF OPERATION.
+
 from curobo.geom.types import WorldConfig, Cuboid, Cylinder
 from curobo.geom.sphere_fit import SphereFitType
 from curobo.types.base import TensorDeviceType
@@ -42,7 +46,6 @@ class CuroboMotionPlanner:
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.q_start = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
-
         # Fetch Mobile Base as collision environment
         self.world_cfg = self.load_stage()
 
@@ -60,7 +63,7 @@ class CuroboMotionPlanner:
         )
 
         world_cfg = WorldConfig(cylinder=mobile_base_cfg.cylinder)
-                
+        world_cfg = WorldConfig.create_obb_world(world_cfg)
         return world_cfg   
     
     def setup_motion_planner(self):
@@ -83,10 +86,10 @@ class CuroboMotionPlanner:
         print("CuRobo is Ready")
 
         # MAY NEED BELOW        
-        # pose_cost = PoseCostMetric(
-        #     hold_partial_pose = True,
-        #     hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 0, 0, 0, 0]),
-        # ) # [rx, ry, rz, tx, ty, tz]
+        pose_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 0, 0, 0, 0]),
+        ) # [rx, ry, rz, tx, ty, tz]
         
         config_args = {
             'max_attempts': 100,
@@ -99,7 +102,6 @@ class CuroboMotionPlanner:
         }
         
         self.plan_config = MotionGenPlanConfig(**config_args)
-        
         self.trajopt_solver = self.motion_gen.trajopt_solver
     
     def generate_trajectory(self,
