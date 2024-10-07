@@ -94,6 +94,11 @@ class CuroboMotionPlanner:
                 offset_position=0.1, tstep_fraction=0.8, linear_axis=2
             )
         
+        self.pulling_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 1, 1, 0]),
+        )
+
         config_args = {
             'max_attempts': 100,
             'enable_graph': False,
@@ -127,20 +132,57 @@ class CuroboMotionPlanner:
                 quaternion=self.tensor_args.to_device(goal_ee_pose[3:]),
             )
             
-            if suction_status: # IF suction gripper is operating, initialize picking cost (constrain orientation)
-                self.plan_config.pose_cost_metric = self.picking_cost
-            else:   # IF suction is not operating, initialize placing cost (approach object in z direction)
+            if suction_status: # IF suction gripper is operating, initialize placing constraint (approach in z direction)
+                self.plan_config.pose_cost_metric = self.placing_cost
+                # TODO: NEED TO GENERATE TWO TRAJECTORIES
+                self.plan_config.pose_cost_metric = self.pulling_cost
+                # ONE FOR PULLING A BOX OUT OF THE OBJECT (pose constraint everywhere except z)
+                # OTHER FOR placing in the box (pose constraint on gripper orientation)
+                # CONCATENATE THE TWO TRAJECTORIES AND RETURN
+                # MAY CAUSE PROBLEM WHEN USED TO EXECUTE TRAJECTORIES
+
+                # ALTERNATIVE:
+                    # USE moveit1 for the pulling out part using cartesian planning and use curobo for the placing part
+
+                try:
+                    motion_gen_result = self.motion_gen.plan_single(
+                        initial_js, goal_pose, self.plan_config
+                    )
+                    reach_succ = motion_gen_result.success.item()
+                except:
+                    return None
+                pulling_motion = motion_gen_result.get_interpolated_plan()
+
                 self.plan_config.pose_cost_metric = self.placing_cost
 
-            try:
-                motion_gen_result = self.motion_gen.plan_single(
-                    initial_js, goal_pose, self.plan_config
-                )
-                reach_succ = motion_gen_result.success.item()
+                try:
+                    initial_js = JointState.from_position(
+                        position=self.tensor_args.to_device([motion_gen_result.get_interpolated_plan().position[-1].cpu().numpy()]),
+                        joint_names=self.j_names[0 : len(initial_js)],
+                    )
 
-            except Exception as e:
-                print("Error in planning trajectory: ", e)
-                return None
+                    motion_gen_result = self.motion_gen.plan_single(
+                        initial_js, goal_pose, self.plan_config
+                    )
+                    reach_succ = motion_gen_result.success.item()
+                except:
+                    return None
+                
+                # SOMETHING LIKE BELOW
+                concatenated_solution = torch.cat((pulling_motion.position, motion_gen_result.get_interpolated_plan().position), dim=0)
+
+            else:   # IF suction is not operating, initialize picking cost (approach object in z direction)
+                self.plan_config.pose_cost_metric = self.picking_cost
+
+                try:
+                    motion_gen_result = self.motion_gen.plan_single(
+                        initial_js, goal_pose, self.plan_config
+                    )
+                    reach_succ = motion_gen_result.success.item()
+
+                except Exception as e:
+                    print("Error in planning trajectory: ", e)
+                    return None
             
         # elif goal_js is not None and goal_ee_pose is None:
         #     initial_js = JointState.from_position(
