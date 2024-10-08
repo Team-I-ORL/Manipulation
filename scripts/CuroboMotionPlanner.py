@@ -133,7 +133,6 @@ class CuroboMotionPlanner:
             )
             
             if suction_status: # IF suction gripper is operating, initialize placing constraint (approach in z direction)
-                self.plan_config.pose_cost_metric = self.placing_cost
                 # TODO: NEED TO GENERATE TWO TRAJECTORIES
                 self.plan_config.pose_cost_metric = self.pulling_cost
                 # ONE FOR PULLING A BOX OUT OF THE OBJECT (pose constraint everywhere except z)
@@ -143,21 +142,30 @@ class CuroboMotionPlanner:
 
                 # ALTERNATIVE:
                     # USE moveit1 for the pulling out part using cartesian planning and use curobo for the placing part
-
+                
+                ##################################### PULL OUT OF BOX #####################################
+                # FIRST GOAL POSE IS +Z ABOVE THE INITIAL_JS
+                ee_pos = self.motion_gen.trajopt_solver.fk(initial_js)
+                ee_pos[0][2] += 0.20 # Move EE y direction to be above the middle of the sink
+                first_waypoint = Pose(
+                    position=self.tensor_args.to_device(ee_pos[0:3]),
+                    quaternion=self.tensor_args.to_device(ee_pos[3:]),
+                )
                 try:
-                    motion_gen_result = self.motion_gen.plan_single(
-                        initial_js, goal_pose, self.plan_config
+                    waypoint_result = self.motion_gen.plan_single(
+                        initial_js, ee_pos, self.plan_config
                     )
-                    reach_succ = motion_gen_result.success.item()
+                    reach_succ = waypoint_result.success.item()
                 except:
                     return None
-                pulling_motion = motion_gen_result.get_interpolated_plan()
+                pulling_motion = waypoint_result.get_interpolated_plan()
 
+                ##################################### PLACING IN THE BOX #####################################
                 self.plan_config.pose_cost_metric = self.placing_cost
 
                 try:
                     initial_js = JointState.from_position(
-                        position=self.tensor_args.to_device([motion_gen_result.get_interpolated_plan().position[-1].cpu().numpy()]),
+                        position=self.tensor_args.to_device([waypoint_result.get_interpolated_plan().position[-1].cpu().numpy()]),
                         joint_names=self.j_names[0 : len(initial_js)],
                     )
 
@@ -168,7 +176,7 @@ class CuroboMotionPlanner:
                 except:
                     return None
                 
-                # SOMETHING LIKE BELOW
+                # SOMETHING LIKE BELOW maybe need to debug
                 concatenated_solution = torch.cat((pulling_motion.position, motion_gen_result.get_interpolated_plan().position), dim=0)
 
             else:   # IF suction is not operating, initialize picking cost (approach object in z direction)
