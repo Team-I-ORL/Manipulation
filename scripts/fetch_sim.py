@@ -12,12 +12,14 @@ from omni.isaac.core.utils.types import ArticulationAction
 import omni.graph.core as og
 import usdrt.Sdf
 
-from helper import add_extensions, add_robot_to_scene
+from helper import add_extensions, add_robot_to_scene, VoxelManager
 from curobo.geom.types import WorldConfig, Cuboid, Cylinder
 from curobo.util.usd_helper import UsdHelper
 from curobo.types.base import TensorDeviceType
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float32MultiArray
+
 
 import numpy as np
 from typing import List
@@ -30,6 +32,9 @@ from curobo.util_file import (
     join_path,
     load_yaml,
 )
+import torch
+from matplotlib import cm
+
 add_extensions(simulation_app) # Also enables ROS2
 curoboMotion = CuroboMotionPlanner("fetch.yml")
 
@@ -66,10 +71,17 @@ class Subscriber(Node):
         self.trajectory_msg = None
         # setup the ROS2 subscriber here
         self.traj_sub = self.create_subscription(JointTrajectory, "joint_trajectory", self.trajectory_callback, 10)
+        self.voxel_sub = self.create_subscription(Float32MultiArray, "voxel_array", self.voxel_callback, 10)
 
         self.ros_world.reset()
         self.executing_traj = False
         self.initial_state = self.q_start
+
+        self.use_debug_draw = True
+        render_voxel_size = 0.02
+
+        if not self.use_debug_draw:
+            self.voxel_viewer = VoxelManager(100, size=render_voxel_size)
     
     def trajectory_callback(self, data):
         # callback function to set the cube position to a new one upon receiving a (empty) ROS2 message
@@ -85,7 +97,47 @@ class Subscriber(Node):
         self.initial_state = data.points[0].positions
         self.joint_name_msg = data.joint_names
 
+    def voxel_callback(self, data):
+        # convert flattened data back to 3D array
+        voxels = torch.tensor(data, dtype=torch.float32).view(-1, 3)
+        if self.use_debug_draw:
+                    self.draw_points(voxels)
+        else:
+            voxels = voxels.cpu().numpy()
+            self.voxel_viewer.update_voxels(voxels[:, :3])
 
+        self.voxel_viewer.update_voxels(voxels[:, :3])
+
+
+    def draw_points(self, voxels):
+        # Third Party
+
+        # Third Party
+        from omni.isaac.debug_draw import _debug_draw
+
+        draw = _debug_draw.acquire_debug_draw_interface()
+        # if draw.get_num_points() > 0:
+        draw.clear_points()
+        if len(voxels) == 0:
+            return
+
+        jet = cm.get_cmap("plasma").reversed()
+
+        cpu_pos = voxels[..., :3].view(-1, 3).cpu().numpy()
+        z_val = cpu_pos[:, 0]
+
+        jet_colors = jet(z_val)
+
+        b, _ = cpu_pos.shape
+        point_list = []
+        colors = []
+        for i in range(b):
+            # get list of points:
+            point_list += [(cpu_pos[i, 0], cpu_pos[i, 1], cpu_pos[i, 2])]
+            colors += [(jet_colors[i][0], jet_colors[i][1], jet_colors[i][2], 0.8)]
+        sizes = [20.0 for _ in range(b)]
+
+#     draw.draw_points(point_list, colors, sizes)
     def run_simulation(self):
         # self.timeline.play()
         i = 0
