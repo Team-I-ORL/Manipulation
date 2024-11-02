@@ -7,7 +7,9 @@ import threading
 # Import ROS2 message types
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
-from target_client.srv import TargetPose
+from enum import Enum
+from orbiter_bt.srv import MoveArm
+import time
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
 # Import curobo utilities (update these imports as needed)
@@ -15,7 +17,24 @@ from curobo.util_file import get_robot_configs_path, get_assets_path
 # Import your CuroboMotionPlanner class
 from CuroboMotionPlanner import CuroboMotionPlanner
 from curobo.types.state import JointState as JointStateC
+#type of motion received: 
+class MotionType(Enum):
+    FREESPACE = 0
+    BOX_IN = 1
+    BOX_OUT = 2
+    SHELF_IN = 3
+    SHELF_OUT = 4
+    RANDOM = 5
+    APPROACH = 6
 
+# ROS2 SERVICE GIVES REQUEST WITH:
+# DESIRED END POSE
+# TYPE OF END GOAL (FREE, BOX_IN, BOX_OUT, SHELF_IN, SHELF_OUT)
+
+# WHEN FREESPACE REQUEST, AN INTERMEDIARY POSE IS COMPUTED
+# FOUND BY TRANSLATING POINT IN 3D SPACE ALONG GRASP VECTOR
+# ALSO 
+# Z-AXIS OF GRIPPER PROBABLY
 class CuroboTrajectoryNode(Node):
     def __init__(self, cfg):
         super().__init__('curobo_trajectory_node')
@@ -31,7 +50,7 @@ class CuroboTrajectoryNode(Node):
         self.start_js = None
 
         # Create the service
-        self.target_srv = self.create_service(TargetPose, 'target_pose', self.target_pose_callback)
+        self.target_srv = self.create_service(MoveArm, 'target_pose', self.target_pose_callback)
 
         # Subscriber for joint state messages
         self.joint_state_subscriber = self.create_subscription(
@@ -39,16 +58,17 @@ class CuroboTrajectoryNode(Node):
             'joint_states',
             self.joint_state_callback,
             10)
-        
+
         # Publisher for joint trajectory messages
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory,
             'joint_trajectory',
             10)
                 # Subscriber for gripper status messages
+
         self.gripper_status_subscriber = self.create_subscription(
             Bool,
-            '/suction_status',
+            'suction_status',
             self.gripper_status_callback,
             10)
         self.gripper_status = None
@@ -58,7 +78,10 @@ class CuroboTrajectoryNode(Node):
 
         self.get_logger().info('Curobo Trajectory Node has been started.')
     def gripper_status_callback(self, msg):
-        self.gripper_status = msg.data
+        if self.gripper_status != msg.data:
+            print(f"Changed gripper status: {msg.data}")
+            self.gripper_status = msg.data
+
         
     def joint_state_callback(self, msg):
         # Update the latest joint state
@@ -84,24 +107,73 @@ class CuroboTrajectoryNode(Node):
         
         return initial_js
 
+    # GENERATE MOTION PLAN USING PREDEFINED MOTION PRIMS REQUESTED FROM TARGET POSE
+    # In TargetPose.srv, we have target_pose and traj_type
+    # traj_type is type of task to be performed
+    # 1. GO TO HOVER POSITION ABOVE BOX
+    # 2. APPROACH OBJECT BY GOING DOWN
+    # 3. PICK OBJECT AND HOVER OVER BOX
+    # 4. GO TO SHELF POSITION (NOT INSIDE ONLY SAME Z
+    # 5. GO IN/OUT OF SHELF
+        # POSE CONSTRAINT WITH RESPECT TO GRIPPER FRAME NOT WORLD
+    
     def target_pose_callback(self, request, response):
         response.success = False
+        
         request_pose = request.target_pose
+        request_type = MotionType(request.traj_type.data)
+        print(request_type)
+        print(f"Request pose: {request_pose}")
         initial_js = self.get_current_joint_positions()
+        if initial_js is None:
+            self.get_logger().error('Cannot generate trajectory without current joint positions.')
+            response.success = False
+            self.published_trajectory = None
+            return response
+        
+        self.curoboMotion.scale_velocity(0.5) # 80% Speed
 
         if request_pose is None and initial_js is None:
             self.get_logger().error('Cannot generate trajectory without current joint positions.')
             response.success = False
             self.published_trajectory = None
             return response
-            
+        
         target_pose = self.convert_pose_to_target_format(request_pose)
+        
+        if request_type == MotionType.FREESPACE:
+            offset = -0.1 # -Z offset w.r.t ee goal frame
+            self.curoboMotion.release_constraint()
+        elif request_type == MotionType.BOX_OUT:
+            offset = -0.45
+            self.curoboMotion.set_constraint()
+        elif request_type == MotionType.SHELF_OUT:
+            offset = -0.20
+            self.curoboMotion.set_constraint()
+        elif request_type == MotionType.BOX_IN or request_type == MotionType.SHELF_IN:
+            offset = 0.0
+            self.curoboMotion.set_constraint()
+        elif request_type == MotionType.RANDOM:
+            offset = 0.0
+            self.curoboMotion.release_constraint()
+        elif request_type == MotionType.APPROACH:
+            offset = 0.02
+            self.curoboMotion.set_constraint()
+        else:
+            self.get_logger().error('Invalid trajectory type.')
+            response.success = False
+            self.published_trajectory = None
+            return response
 
+        target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
+        
         trajectory = self.curoboMotion.generate_trajectory(
             initial_js=initial_js,
             goal_ee_pose=target_pose,
-            suction_status=self.gripper_status)
+            # suction_status=self.gripper_status
+        )
 
+        print(trajectory)
         if trajectory is None:
             self.get_logger().error('Failed to generate trajectory.')
             response.success = False
@@ -115,7 +187,49 @@ class CuroboTrajectoryNode(Node):
 
         self.get_logger().info('Published joint trajectory.')
         response.success = True
+        print(response)
+
+        time.sleep(10.0)
+        self.get_logger().info("Response success: True")
+
         return response
+
+    # def target_pose_callback(self, request, response):
+    #     response.success = False
+        
+    #     request_pose = request.target_pose
+        
+    #     print(f"Request pose: {request_pose}")
+    #     initial_js = self.get_current_joint_positions()
+
+    #     if request_pose is None and initial_js is None:
+    #         self.get_logger().error('Cannot generate trajectory without current joint positions.')
+    #         response.success = False
+    #         self.published_trajectory = None
+    #         return response
+    #     target_pose = self.convert_pose_to_target_format(request_pose)
+
+    #     trajectory = self.curoboMotion.generate_trajectory(
+    #         initial_js=initial_js,
+    #         goal_ee_pose=target_pose,
+    #         suction_status=self.gripper_status)
+
+    #     if trajectory is None:
+    #         self.get_logger().error('Failed to generate trajectory.')
+    #         response.success = False
+    #         self.published_trajectory = None
+    #         return response
+        
+    #     joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
+    #     self.published_trajectory = joint_trajectory_msg
+    #     self.trajectory_publisher.publish(joint_trajectory_msg)
+    #     self.start_js = initial_js
+
+    #     self.get_logger().info('Published joint trajectory.')
+    #     response.success = True
+    #     self.get_logger().info("Response success: True")
+
+    #     return response
 
     @staticmethod
     def convert_pose_to_target_format(pose_msg):
@@ -123,6 +237,10 @@ class CuroboTrajectoryNode(Node):
         pose = pose_msg.pose
 
         # Convert ROS2 Pose to the format expected by CuroboMotionPlanner
+        # pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
+        #                pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
+
+        # HARD CODING ORIENTATION FOR BOX PICKING BECAUSE ITS A GIVEN --> BASED ON SUCTION_STATUS
         pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
                        pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
         

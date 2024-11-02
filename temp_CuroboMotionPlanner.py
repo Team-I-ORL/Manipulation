@@ -68,10 +68,10 @@ class CuroboMotionPlanner:
         self.trajectories = []
 
         # collision parameters
-        self.voxel_size = 0.05
+        self.voxel_size = 0.02
 
         #debug 
-        self.show_window = True
+        self.show_window = False
 
     
     def load_stage(self):
@@ -91,19 +91,18 @@ class CuroboMotionPlanner:
                             "voxel_size": 0.02,
                         }
                     }
-                    # mobile_base_cfg
                 }
             )
         # world_cfg = WorldConfig(cylinder=mobile_base_cfg.cylinder)
         # world_cfg = WorldConfig.create_obb_world(world_cfg)
 
-        # world_cfg.add_obstacle(cylinder=mobile_base_cfg.cylinder)
-        world_cfg = WorldConfig.create_collision_support_world(world_cfg)
+        world_cfg.add_obstacle(mobile_base_cfg.cylinder)
+        # world_cfg = WorldConfig.create_collision_support_world(world_cfg)
         return world_cfg   
     
     def setup_motion_planner(self):
         # Configure MotionGen
-        motion_gen_config = MotionGenConfig.load_from_robot_config(
+        motion_gen_config = MotionGenConfig.load_from_rbot_config(
             self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
@@ -121,12 +120,28 @@ class CuroboMotionPlanner:
         print("CuRobo is Ready")
 
         # MAY NEED BELOW        
+        self.placing_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 1, 1, 1]),
+        ) # [rx, ry, rz, tx, ty, tz]
 
         self.freespace_cost = PoseCostMetric(
             hold_partial_pose = False,
             hold_vec_weight=self.motion_gen.tensor_args.to_device([0, 0, 0, 0, 0, 0]),
         )
+        self.picking_cost = PoseCostMetric.create_grasp_approach_metric(
+                offset_position=0.1, tstep_fraction=0.8, linear_axis=2
+            )
 
+        self.shelf_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 0, 1]),
+            )
+
+        self.pulling_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 1, 1, 0]),
+        )
         self.linear_cost = PoseCostMetric(
             hold_partial_pose = True,
             hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 1, 1]),
@@ -146,16 +161,18 @@ class CuroboMotionPlanner:
         self.trajopt_solver = self.motion_gen.trajopt_solver
 
     def setup_motion_planner_with_collision_avoidance(self):
+        print("world_cfg", self.world_cfg)
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
-            trajopt_tsteps=32,
+            collision_cache={"obb": 200, "mesh": 100, "voxels":100},
+            trajopt_tsteps=24,
             collision_checker_type=CollisionCheckerType.BLOX,
             use_cuda_graph=True,
             num_trajopt_seeds=12,
             num_graph_seeds=12,
-            interpolation_dt=0.03,
+            interpolation_dt=0.01,
             collision_activation_distance=0.025,
             acceleration_scale=1.0,
             self_collision_check=True,
@@ -167,23 +184,38 @@ class CuroboMotionPlanner:
         )
         self.motion_gen = MotionGen(motion_gen_config)
         print("warming up..")
-        self.motion_gen.warmup(warmup_js_trajopt=False)
+        self.motion_gen.warmup(enable_graph=True, warmup_js_trajopt=True, parallel_finetune=True)
 
         self.world_model = self.motion_gen.world_collision
+        print("self.world_model", self.world_model)
+    
 
         # MAY NEED BELOW        
         self.placing_cost = PoseCostMetric(
             hold_partial_pose = True,
-            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 0, 0, 0, 0]),
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 1, 1, 1]),
         ) # [rx, ry, rz, tx, ty, tz]
 
+        self.freespace_cost = PoseCostMetric(
+            hold_partial_pose = False,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([0, 0, 0, 0, 0, 0]),
+        )
         self.picking_cost = PoseCostMetric.create_grasp_approach_metric(
                 offset_position=0.1, tstep_fraction=0.8, linear_axis=2
             )
-        
+
+        self.shelf_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 0, 1]),
+            )
+
         self.pulling_cost = PoseCostMetric(
             hold_partial_pose = True,
             hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 1, 1, 0]),
+        )
+        self.linear_cost = PoseCostMetric(
+            hold_partial_pose = True,
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 1, 1]),
         )
 
         config_args = {
@@ -301,7 +333,8 @@ class CuroboMotionPlanner:
             
            # update blox given camera data in dict format and camera pose relative to the planning base frame
     def update_blox_from_camera(self, camera_data, camera_pose) -> None:
-        data_camera = CameraObservation(depth_image=camera_data["depth"], instrinsics=camera_data["instrinsics"], 
+        self.world_model.decay_layer("world")
+        data_camera = CameraObservation(depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
                                         pose=camera_pose)
         
         self.world_model.add_camera_frame(data_camera, "world")
@@ -309,8 +342,15 @@ class CuroboMotionPlanner:
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
-        bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        bounding = Cuboid("t", dims=[2, 2, 2.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        # bounding = Cuboid("t", dims=[2, 2, 2], pose=[0.5, 0.5, 0.5, 1, 0, 0, 0])
+
+
+        print("Depth Image (sample):", camera_data["depth"][0:5, 0:5])  # Sample depth values
+        print("Bounding Box:", bounding)
+
         voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
+        print("Voxels before filtering:", voxels)
         if voxels.shape[0] > 0:
             voxels = voxels[voxels[:, 2] > self.voxel_size]
             voxels = voxels[voxels[:, 0] > 0.0]
@@ -326,18 +366,19 @@ class CuroboMotionPlanner:
             #     voxel_viewer.clear()
         
         if self.show_window:
-            depth_image = camera_data["depth"]
-            color_image = camera_data["raw_rgb"]
+            depth_image = camera_data["depth"].cpu().numpy()
+            color_image = camera_data["raw_rgb"].cpu().numpy()
             depth_colormap = cv2.applyColorMap(
                 cv2.convertScaleAbs(depth_image, alpha=100), cv2.COLORMAP_VIRIDIS
             )
-            color_image = cv2.flip(color_image, 1)
+            # color_image = cv2.flip(color_image, 1)
             depth_colormap = cv2.flip(depth_colormap, 1)
 
-            images = np.hstack((color_image, depth_colormap))
+            # images = np.hstack((color_image, depth_colormap))
 
             cv2.namedWindow("NVBLOX", cv2.WINDOW_NORMAL)
-            cv2.imshow("NVBLOX", images)
+            cv2.imshow("NVBLOX", depth_colormap)
+            # cv2.imshow("RGB", color_image)
             key = cv2.waitKey(1)
             # Press esc or 'q' to close the image window
             if key & 0xFF == ord("q") or key == 27:
@@ -400,3 +441,146 @@ class CuroboMotionPlanner:
 #             "raw_depth": depth_np,
 #             "rgba_nvblox": rgba.permute((1, 2, 0)).contiguous(),
 #         }
+
+
+
+
+# World Model :: WorldBloxCollision(
+#     tensor_args=TensorDeviceType(
+#         device=device(type='cuda', index=0),
+#         dtype=torch.float32,
+#         collision_geometry_dtype=torch.float32,
+#         collision_gradient_dtype=torch.float32,
+#         collision_distance_dtype=torch.float32
+#     ),
+#     world_model=WorldConfig(
+#         sphere=[],
+#         cuboid=[
+#             Cuboid(
+#                 name='table',
+#                 pose=[0.0, 0.0, -0.11, 1, 0, 0, 0.0],
+#                 scale=None,
+#                 color=[0.6, 0.6, 0.8, 1.0],
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 dims=[2.2, 2.2, 0.2]
+#             ),
+#             Cuboid(
+#                 name='cube4',
+#                 pose=[-0.5, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0],
+#                 scale=None,
+#                 color=[0.6, 0.6, 0.8, 1.0],
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 dims=[0.05, 2.0, 2.0]
+#             )
+#         ],
+#         capsule=[],
+#         cylinder=[],
+#         mesh=[],
+#         blox=[
+#             BloxMap(
+#                 name='world',
+#                 pose=[0, 0, 0, 1, 0, 0, 0],
+#                 scale=[1.0, 1.0, 1.0],
+#                 color=None,
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 map_path=None,
+#                 voxel_size=0.02,
+#                 integrator_type='occupancy',
+#                 mesh_file_path=None,
+#                 mapper_instance=None,
+#                 mesh=None
+#             )
+#         ],
+#         voxel=[],
+#         objects=[
+#             BloxMap(
+#                 name='world',
+#                 pose=[0, 0, 0, 1, 0, 0, 0],
+#                 scale=[1.0, 1.0, 1.0],
+#                 color=None,
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 map_path=None,
+#                 voxel_size=0.02,
+#                 integrator_type='occupancy',
+#                 mesh_file_path=None,
+#                 mapper_instance=None,
+#                 mesh=None
+#             ),
+#             Cuboid(
+#                 name='table',
+#                 pose=[0.0, 0.0, -0.11, 1, 0, 0, 0.0],
+#                 scale=None,
+#                 color=[0.6, 0.6, 0.8, 1.0],
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 dims=[2.2, 2.2, 0.2]
+#             ),
+#             Cuboid(
+#                 name='cube4',
+#                 pose=[-0.5, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0],
+#                 scale=None,
+#                 color=[0.6, 0.6, 0.8, 1.0],
+#                 texture_id=None,
+#                 texture=None,
+#                 material=Material(metallic=0.0, roughness=0.4),
+#                 tensor_args=TensorDeviceType(
+#                     device=device(type='cuda', index=0),
+#                     dtype=torch.float32,
+#                     collision_geometry_dtype=torch.float32,
+#                     collision_gradient_dtype=torch.float32,
+#                     collision_distance_dtype=torch.float32
+#                 ),
+#                 dims=[0.05, 2.0, 2.0]
+#             )
+#         ]
+#     ),
+#     cache=None,
+#     n_envs=1,
+#     checker_type=CollisionCheckerType.BLOX,
+#     max_distance=torch.tensor([0.1000], device='cuda:0'),
+#     max_esdf_distance=torch.tensor([100.], device='cuda:0')
+# )

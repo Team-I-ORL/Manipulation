@@ -27,10 +27,11 @@ from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityExce
 import tf_transformations as tf
 
 class CameraLoader():
-    def __init__(self):
+    def __init__(self, node):
+        self.node = node
         self.bridge = CvBridge()
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self.node)
         self.camera_data = {
             "rgba": None,
             "depth": None,
@@ -48,18 +49,20 @@ class CameraLoader():
             self.camera_data["raw_rgb"] = rgb_tensor     
             rgba = torch.cat([rgb_tensor, torch.ones_like(rgb_tensor[:, :, 0:1]) * 255], dim=-1)
             self.camera_data["rgba"] = rgba
-            self.get_logger().info("RGBA image data updated in camera_data dictionary.")
+            # self.node.get_logger().info("RGBA image data updated in camera_data dictionary.")
         except Exception as e:
-            self.get_logger().error(f"Failed to convert image: {e}")
+            self.node.get_logger().error(f"Failed to convert image: {e}")
 
     def depth_callback(self, data):
         try:
-            depth_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='32FC1')
-            depth_tensor = torch.from_numpy(depth_image).float()
+            depth_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')
+            depth_tensor = torch.from_numpy(depth_image/1000).float()
+            # print("depth data : ", depth_tensor.mean())
+
             self.camera_data["depth"] = depth_tensor
-            self.get_logger().info("Depth image data updated in camera_data dictionary.")
+            # self.node.get_logger().info("Depth image data updated in camera_data dictionary.")
         except Exception as e:
-            self.get_logger().error(f"Failed to convert depth image: {e}")
+            self.node.get_logger().error(f"Failed to convert depth image: {e}")
     
     def pose_callback(self, data):
         # goes in as a float
@@ -69,7 +72,7 @@ class CameraLoader():
     def set_fetch_camera_pose(self):
         try:
             # Wait and lookup the transform from 'base_link' to 'camera_rgb_link'
-            transform = self.tf_buffer.lookup_transform('base_link', 'camera_rgb_link', rclpy.time.Time())
+            transform = self.tf_buffer.lookup_transform('shoulder_pan_link', 'head_camera_depth_frame', rclpy.time.Time())
             
             # Extract the translation (position) data
             translation = transform.transform.translation
@@ -81,28 +84,28 @@ class CameraLoader():
             
             # Convert quaternion to rotation matrix
             rotation_matrix = torch.tensor(tf.quaternion_matrix(quaternion)[:3, :3], dtype=torch.float32)
-
+            quaternion = torch.tensor(quaternion, dtype=torch.float32)
             # Store the pose in the camera_data dictionary
             self.camera_data["pose"] = {
                 "position": position,
-                "rotation_matrix": rotation_matrix
+                "orientation": quaternion[[3,0,1,2]]
             }
-            self.get_logger().info("Camera pose fetched and stored in camera_data.")
+            self.node.get_logger().info("Camera pose fetched and stored in camera_data.")
         
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().error(f"Could not fetch transform: {e}")
+            self.node.get_logger().error(f"Could not fetch transform: {e}")
 
 
     def intrinsics_callback(self, data):
         try:
             intrinsics_matrix = torch.tensor(data.k, dtype=torch.float32).view(3, 3)
             self.camera_data["intrinsics"] = intrinsics_matrix
-            self.get_logger().info("Intrinsics data updated in camera_data dictionary.")
+            # self.node.get_logger().info("Intrinsics data updated in camera_data dictionary.")
         except Exception as e:
-            self.get_logger().error(f"Failed to process camera intrinsics: {e}")
+            self.node.get_logger().error(f"Failed to process camera intrinsics: {e}")
 
     def get_data(self):
-        self.clip_camera(self.camera_data)
+        # self.clip_camera(self.camera_data)
         return self.camera_data
     
     def clip_camera(self, camera_data):

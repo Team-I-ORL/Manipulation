@@ -9,7 +9,8 @@ import threading
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 from enum import Enum
-from target_client.srv import TargetPose
+from orbiter_bt.srv import MoveArm
+import time
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
 from sensor_msgs.msg import Image, CameraInfo
@@ -20,8 +21,10 @@ from temp_CuroboMotionPlanner import CuroboMotionPlanner
 from fetch_camera import CameraLoader
 from std_msgs.msg import Float32MultiArray
 
+import torch
+
 from curobo.types.math import Pose
-from curobo.types.state import JointState
+from curobo.types.state import JointState as JointStateC
 
 import struct
 
@@ -32,6 +35,8 @@ class MotionType(Enum):
     BOX_OUT = 2
     SHELF_IN = 3
     SHELF_OUT = 4
+    RANDOM = 5
+    APPROACH = 6
 
 # ROS2 SERVICE GIVES REQUEST WITH:
 # DESIRED END POSE
@@ -63,7 +68,7 @@ class CuroboTrajectoryNode(Node):
         self.start_js = None
 
         # Create the service
-        self.target_srv = self.create_service(TargetPose, 'target_pose', self.target_pose_callback)
+        self.target_srv = self.create_service(MoveArm, 'target_pose', self.target_pose_callback)
 
         # Subscriber for joint state messages
         self.joint_state_subscriber = self.create_subscription(
@@ -94,12 +99,12 @@ class CuroboTrajectoryNode(Node):
         
         if self.nvblox:
             ## TODO: Replace continous subsription with invoked subscription for lower network load
-            self.cam = CameraLoader()
-            self.create_subscription( Image, '/head_camera/rgb/image_raw', self.cam.camera_callback)
-            self.create_subscription( Image, '/head_camera/depth/image_rect_raw', self.cam.depth_callback)
+            self.cam = CameraLoader(self)
+            self.create_subscription( Image, '/head_camera/rgb/image_raw', self.cam.rgb_callback, 1)
+            self.create_subscription( Image, '/head_camera/depth/image_rect_raw', self.cam.depth_callback,1 )
             # self.create_subscription( Pose, '/camera/pose', self.pose_callback)
+            self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback, 1)
             self.cam.set_fetch_camera_pose()
-            self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback)
 
         self.gripper_status = None
 
@@ -171,14 +176,20 @@ class CuroboTrajectoryNode(Node):
             offset = -0.10 # -Z offset w.r.t ee goal frame
             self.curoboMotion.release_constraint()
         elif request_type == MotionType.BOX_OUT:
-            offset = 0.30
+            offset = -0.30
             self.curoboMotion.set_constraint()
         elif request_type == MotionType.SHELF_OUT:
-            offset = 0.20
+            offset = -0.20
             self.curoboMotion.set_constraint()
         elif request_type == MotionType.BOX_IN or request_type == MotionType.SHELF_IN:
             self.update_collision_world()
             offset = 0.0
+            self.curoboMotion.set_constraint()
+        elif request_type == MotionType.RANDOM:
+            offset = 0.0
+            self.curoboMotion.release_constraint()
+        elif request_type == MotionType.APPROACH:
+            offset = 0.02
             self.curoboMotion.set_constraint()
         else:
             self.get_logger().error('Invalid trajectory type.')
@@ -206,22 +217,26 @@ class CuroboTrajectoryNode(Node):
 
         self.get_logger().info('Published joint trajectory.')
         response.success = True
+        print(response)
+
+        time.sleep(10.0)
         self.get_logger().info("Response success: True")
 
         return response
 
     def update_collision_world(self):
         self.camera_data = self.cam.get_data()
+        print("Camera Data : ", self.camera_data)
         if self.camera_data is None:
             raise ValueError('Camera data not available.')
         # add in robot planning base frame - should be a constant or can get from tf
-        camera_position = [0,0,0]
-        camera_orientation = [0,0,0,1]
+        camera_position = self.camera_data['pose']['position'] #[0,0,0]
+        camera_orientation = self.camera_data['pose']['orientation'] #[0,0,0,1]
         self.camera_pose = Pose(
-                position=self.tensor_args.to_device(camera_position),
-                quaternion=self.tensor_args.to_device(camera_orientation),
+            position=self.curoboMotion.tensor_args.to_device(camera_position),
+            quaternion=self.curoboMotion.tensor_args.to_device(camera_orientation), normalize_rotation=True
             )
-        voxels = self.curoboMotion.update_blox_from_camera(self.camera_data)
+        voxels = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose)
         self.publish_voxel_array(voxels.cpu().numpy())
         
     def publish_voxel_array(self, voxels):
@@ -252,7 +267,7 @@ class CuroboTrajectoryNode(Node):
 
         # HARD CODING ORIENTATION FOR BOX PICKING BECAUSE ITS A GIVEN --> BASED ON SUCTION_STATUS
         pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
-                       0.0, 0.707, 0.0, -0.707] 
+                       pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
         
         return pose_curobo
 

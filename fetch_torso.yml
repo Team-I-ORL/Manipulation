@@ -1,0 +1,92 @@
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    isaac_usd_path: "~/fetch_ros/fetch_description/robots/fetch_manip/fetch_manip.usd"
+    usd_robot_root: "/fetch"
+    usd_flip_joints: ["torso_lift_joint", "shoulder_pan_joint", "shoulder_lift_joint", "upperarm_roll_joint",
+                      "elbow_flex_joint", "forearm_roll_joint", "wrist_flex_joint", "wrist_roll_joint"]
+    usd_flip_joints: {
+      "shoulder_pan_joint": "Z",
+      "shoulder_lift_joint": "Z",
+      "upperarm_roll_joint": "Z",
+      "elbow_flex_joint": "Z",
+      "forearm_roll_joint": "Z",
+      "wrist_flex_joint": "Z"
+    }
+
+    usd_flip_joint_limits: []
+    urdf_path: "/home/siddharth/fetch_ros/fetch_description/robots/fetch_manip.urdf"
+    asset_root_path: "/home/siddharth/fetch_ros/fetch_description"
+    base_link: "base_link"
+    ee_link: "gripper_link"
+    collision_link_names:
+      [
+        "base_link",
+        "head_pan_link",
+        "torso_lift_link",
+        "shoulder_pan_link",
+        "shoulder_lift_link",
+        "upperarm_roll_link",
+        "elbow_flex_link",
+        "forearm_roll_link",
+        "wrist_flex_link",
+        "wrist_roll_link",
+        "gripper_link"
+      ]
+    collision_spheres: "spheres/fetch_mesh.yml"
+    collision_sphere_buffer: 0.004
+    # extra_collision_spheres: {"gripper_link": 2}
+    use_global_cumul: True
+    self_collision_ignore:
+      {
+        "base_link": ["head_pan_link", "head_tilt_link", "torso_lift_link"],
+        "head_pan_link": ["shoulder_pan_link", "torso_lift_link"],
+        "torso_lift_link": ["shoulder_pan_link", "shoulder_lift_link"],
+        "shoulder_pan_link": ["torso_lift_link", "shoulder_lift_link"],
+        "shoulder_lift_link": ["upperarm_roll_link", "elbow_flex_link"],
+        "upperarm_roll_link": ["elbow_flex_link", "forearm_roll_link"],
+        "elbow_flex_link": ["forearm_roll_link", "wrist_flex_link"],
+        "forearm_roll_link": ["wrist_flex_link", "wrist_roll_link"],
+        "wrist_flex_link": ["wrist_roll_link", "gripper_link"],
+        "wrist_roll_link": ["gripper_link"],
+        "gripper_link": ["wrist_roll_link", "wrist_flex_link"],
+      }
+    self_collision_buffer:
+      {
+        "base_link": 0.1,
+        "head_pan_link": 0.005,
+        "torso_lift_link": 0.005,
+        "shoulder_pan_link": 0.0,
+        "shoulder_lift_link": 0.00,
+        "upperarm_roll_link": 0.0,
+        "elbow_flex_link": 0.0,
+        "forearm_roll_link": 0.0,
+        "wrist_flex_link": 0.02,
+        "wrist_roll_link": 0.01,
+        "gripper_link": 0.01,
+      }
+
+    mesh_link_names:
+      [
+        "base_link",
+        "head_pan_link",
+        "torso_lift_link",
+        "shoulder_pan_link",
+        "shoulder_lift_link",
+        "upperarm_roll_link",
+        "elbow_flex_link",
+        "forearm_roll_link",
+        "wrist_flex_link",
+        "wrist_roll_link",
+        "gripper_link",
+      ]
+
+    cspace:
+      joint_names: ["torso_lift_joint", "shoulder_pan_joint", "shoulder_lift_joint", "upperarm_roll_joint", "elbow_flex_joint",
+                    "forearm_roll_joint", "wrist_flex_joint", "wrist_roll_joint"]
+      retract_config: [0, 1.3056849, 1.4040100, -0.34258141, 1.743283, 0.017052, 1.627947, -0.129718]
+
+      null_space_weight: [1,1,1,1,1,1,1,1]
+      cspace_distance_weight: [1,1,1,1,1,1,1,1]
+      max_acceleration: 10.0
+      max_jerk: 300.0

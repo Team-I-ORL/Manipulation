@@ -20,7 +20,6 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 
-
 import numpy as np
 from typing import List
 import rclpy
@@ -32,15 +31,12 @@ from curobo.util_file import (
     join_path,
     load_yaml,
 )
-import torch
-from matplotlib import cm
-
 add_extensions(simulation_app) # Also enables ROS2
 curoboMotion = CuroboMotionPlanner("fetch.yml")
 
-class Subscriber(Node):
+class IsaacSim(Node):
     def __init__(self):
-        super().__init__("tutorial_subscriber")
+        super().__init__("Isaac_Sim_Fetch")
 
         # setting up the world with a cube
         # self.timeline = omni.timeline.get_timeline_interface()
@@ -80,8 +76,9 @@ class Subscriber(Node):
         self.use_debug_draw = True
         render_voxel_size = 0.02
 
-        if not self.use_debug_draw:
+        if self.use_debug_draw:
             self.voxel_viewer = VoxelManager(100, size=render_voxel_size)
+    
     
     def trajectory_callback(self, data):
         # callback function to set the cube position to a new one upon receiving a (empty) ROS2 message
@@ -99,7 +96,7 @@ class Subscriber(Node):
 
     def voxel_callback(self, data):
         # convert flattened data back to 3D array
-        voxels = torch.tensor(data, dtype=torch.float32).view(-1, 3)
+        voxels = torch.tensor(data.data, dtype=torch.float32).view(-1, 3)
         if self.use_debug_draw:
                     self.draw_points(voxels)
         else:
@@ -108,10 +105,7 @@ class Subscriber(Node):
 
         self.voxel_viewer.update_voxels(voxels[:, :3])
 
-
     def draw_points(self, voxels):
-        # Third Party
-
         # Third Party
         from omni.isaac.debug_draw import _debug_draw
 
@@ -137,7 +131,6 @@ class Subscriber(Node):
             colors += [(jet_colors[i][0], jet_colors[i][1], jet_colors[i][2], 0.8)]
         sizes = [20.0 for _ in range(b)]
 
-#     draw.draw_points(point_list, colors, sizes)
     def run_simulation(self):
         # self.timeline.play()
         i = 0
@@ -163,6 +156,7 @@ class Subscriber(Node):
 
             if step_index < 20:
                 continue
+
             if self.executing_traj:
                 self.robot.set_joint_positions(self.initial_state, idx_list)
                 print("Received trajectory")
@@ -182,7 +176,6 @@ class Subscriber(Node):
                     print(articulation_action.joint_positions)
 
                     self.articulation_controller.apply_action(articulation_action)
-                    
                     for _ in range(2):
                         self.ros_world.step(render=True)
                 
@@ -193,6 +186,6 @@ class Subscriber(Node):
 
 if __name__ == "__main__":
     rclpy.init()
-    subscriber = Subscriber()
-    subscriber.run_simulation()
+    isaac_sim = IsaacSim()
+    isaac_sim.run_simulation()
 

@@ -4,7 +4,7 @@ from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryGoal, JointTolerance
 from enum import Enum
-
+from std_msgs.msg import Int32
 class Status(Enum):
     PENDING         = 0
     ACTIVE          = 1
@@ -30,7 +30,7 @@ class RobotArm:
         self.joint_trajectory_sub = rospy.Subscriber("joint_trajectory", JointTrajectory, self.trajectory_callback)
 
         # Publisher for status of the robot arm
-        self.status_pub = rospy.Publisher("robot_arm_status", int, queue_size=1)
+        self.status_pub = rospy.Publisher("robot_arm_status", Int32, queue_size=1)
 
         # Flag to indicate if the robot is currently executing a trajectory
         self.executing_trajectory = False
@@ -80,8 +80,8 @@ class RobotArm:
         """
         Callback to handle feedback from the action server.
         """
-        print("Feedback received: ", feedback)
-        self.status_pub.publish(feedback.status.status)
+        print("State of Arm: ", self.traj_client.get_state())
+        self.status_pub.publish(self.traj_client.get_state())
         # rospy.loginfo("Received feedback during execution of the trajectory.")
 
     def done_callback(self, state, result):
