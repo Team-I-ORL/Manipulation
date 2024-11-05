@@ -25,6 +25,7 @@ from geometry_msgs.msg import Pose
 from cv_bridge import CvBridge
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 import tf_transformations as tf
+from rclpy.duration import Duration
 
 class CameraLoader():
     def __init__(self, node):
@@ -70,30 +71,33 @@ class CameraLoader():
         self.camera_data["pose"] = pose
     
     def set_fetch_camera_pose(self):
-        try:
-            # Wait and lookup the transform from 'base_link' to 'camera_rgb_link'
-            transform = self.tf_buffer.lookup_transform('shoulder_pan_link', 'head_camera_depth_frame', rclpy.time.Time())
-            
-            # Extract the translation (position) data
-            translation = transform.transform.translation
-            position = torch.tensor([translation.x, translation.y, translation.z], dtype=torch.float32)
+        while True:
+            try:
+                # Wait and lookup the transform from 'base_link' to 'camera_rgb_link' 
+                transform = self.tf_buffer.lookup_transform( 'base_link', 'head_camera_depth_optical_frame', rclpy.time.Time(), timeout=Duration(seconds=3.0))
+                print("transform : ", transform)
+                # Extract the translation (position) data
+                translation = transform.transform.translation
+                position = torch.tensor([translation.x, translation.y, translation.z], dtype=torch.float32)
 
-            # Extract the rotation (orientation) quaternion
-            rotation = transform.transform.rotation
-            quaternion = [rotation.x, rotation.y, rotation.z, rotation.w]
-            
-            # Convert quaternion to rotation matrix
-            rotation_matrix = torch.tensor(tf.quaternion_matrix(quaternion)[:3, :3], dtype=torch.float32)
-            quaternion = torch.tensor(quaternion, dtype=torch.float32)
-            # Store the pose in the camera_data dictionary
-            self.camera_data["pose"] = {
-                "position": position,
-                "orientation": quaternion[[3,0,1,2]]
-            }
-            self.node.get_logger().info("Camera pose fetched and stored in camera_data.")
-        
-        except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.node.get_logger().error(f"Could not fetch transform: {e}")
+                # Extract the rotation (orientation) quaternion
+                rotation = transform.transform.rotation
+                quaternion = [rotation.x, rotation.y, rotation.z, rotation.w]
+                
+                # Convert quaternion to rotation matrix
+                rotation_matrix = torch.tensor(tf.quaternion_matrix(quaternion)[:3, :3], dtype=torch.float32)
+                quaternion = torch.tensor(quaternion, dtype=torch.float32)
+                # Store the pose in the camera_data dictionary
+                self.camera_data["pose"] = {
+                    "position": position,
+                    "orientation": quaternion[[3,0,1,2]]
+                }
+                self.node.get_logger().info("Camera pose fetched and stored in camera_data.")
+                break
+
+            except (LookupException, ConnectivityException, ExtrapolationException) as e:
+                self.node.get_logger().error(f"Could not fetch transform: {e}")
+                break
 
 
     def intrinsics_callback(self, data):

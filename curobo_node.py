@@ -4,12 +4,15 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 import threading
+from rclpy.executors import MultiThreadedExecutor
+
 # Import ROS2 message types
 from std_msgs.msg import Bool, Int32
 from geometry_msgs.msg import PoseStamped
 from enum import Enum
 from orbiter_bt.srv import MoveArm
 import time
+
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState, Image, CameraInfo
 # Import curobo utilities (update these imports as needed)
@@ -20,6 +23,8 @@ from curobo.types.state import JointState as JointStateC
 from fetch_camera import CameraLoader
 from std_msgs.msg import Float32MultiArray
 from curobo.types.math import Pose as PoseC
+from curobo.geom.types import Cuboid
+
 
 #type of motion received: 
 class MotionType(Enum):
@@ -43,20 +48,19 @@ class Status(Enum):
     RECALLING = 7
     RECALLED = 8
     LOST = 9
-# ROS2 SERVICE GIVES REQUEST WITH:
-# DESIRED END POSE
-# TYPE OF END GOAL (FREE, BOX_IN, BOX_OUT, SHELF_IN, SHELF_OUT)
 
-# WHEN FREESPACE REQUEST, AN INTERMEDIARY POSE IS COMPUTED
-# FOUND BY TRANSLATING POINT IN 3D SPACE ALONG GRASP VECTOR
-# ALSO 
-# Z-AXIS OF GRIPPER PROBABLY
 class CuroboTrajectoryNode(Node):
     def __init__(self, cfg):
         super().__init__('curobo_trajectory_node')
+        self.condition = threading.Condition()
 
-        self.nvblox = os.getenv("NVBLOX", False)
-
+        self.nvblox = os.getenv("NVBLOX", False) == "true"
+        self.debug = os.getenv("DEBUG", False) == "true"
+        self.do_not_persist_voxels = os.getenv("DO_NOT_PERSIST_VOXELS", False) == "true"
+        print(" Running with flags: ")
+        print(f"NVBLOX: {self.nvblox}")
+        print(f"DEBUG: {self.debug}")
+        print(f"DO_NOT_PERSIST_VOXELS: {self.do_not_persist_voxels}")
         # Initialize CuroboMotionPlanner
         self.curoboMotion = CuroboMotionPlanner(cfg)
 
@@ -104,7 +108,6 @@ class CuroboTrajectoryNode(Node):
             self.gripper_status_callback,
             10)
 
-        
         self.gripper_status = None
 
         if self.nvblox:
@@ -118,33 +121,22 @@ class CuroboTrajectoryNode(Node):
             # self.create_subscription( Pose, '/camera/pose', self.pose_callback)
             self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback, 1)
             self.cam.set_fetch_camera_pose()
+                
         self.lock = threading.Lock()
         self.published_trajectory = None
 
         self.get_logger().info('Curobo Trajectory Node has been started.')
 
     def udpate_env(self, msg):
-        if msg.data:
-            self.update_collision_world()
+        self.update_collision_world(persist = msg.data)
         
     def wait_for_idle(self):
-        # Wait for the robot to become idle
-        self.get_logger().info("Waiting for robot to be idle...")
-        # TODO: FINDOUT if there are other status that defines arm not moving
-        while rclpy.ok() and (self.robot_status == Status.ACTIVE or self.robot_status == Status.PREEMPTING):
-            self.get_logger().info("Robot is moving; waiting to become idle...")
-            self.robot_status = rclpy.wait_for_message("robot_arm_status", Int32)
-            time.sleep(0.1)
-        self.get_logger().info("Robot is now idle.")
-
-    def wait_until_move(self):
-        # Wait for the robot to become idle
-        self.get_logger().info("Waiting for robot to move...")
-        # TODO: FINDOUT if there are other status that defines arm not moving
-        while rclpy.ok() and self.robot_status != Status.ACTIVE:
-            self.get_logger().info("Robot is not moving; waiting to move...")
-            rclpy.spin_once(self, timeout_sec=0.1)        
-        self.get_logger().info("Robot is now moving.")
+        # Wait for the robot to become idle using the condition variable
+        with self.condition:
+            while rclpy.ok() and (self.robot_status == Status.ACTIVE or self.robot_status == Status.PREEMPTING):
+                self.get_logger().info("Robot is moving; waiting to become idle...")
+                self.condition.wait(timeout=0.1)  # Wait with a timeout to allow thread release
+            self.get_logger().info("Robot is now idle.")
 
     def gripper_status_callback(self, msg):
         if self.gripper_status != msg.data:
@@ -152,8 +144,11 @@ class CuroboTrajectoryNode(Node):
             self.gripper_status = msg.data
 
     def manipulator_status_callback(self, msg):
-        self.robot_status = Status(msg.data)
-        print(self.robot_status)
+        # Update the robot status and notify waiting threads
+        with self.condition:
+            self.robot_status = Status(msg.data)
+            self.get_logger().info(f"Robot status updated: {self.robot_status}")
+            self.condition.notify_all()  # Notify all waiting threads
         
     def joint_state_callback(self, msg):
         # Update the latest joint state
@@ -185,8 +180,6 @@ class CuroboTrajectoryNode(Node):
         request_type = MotionType(request.traj_type.data)
         print(request_type)
         print(f"Request pose: {request_pose}")
-
-        # Ensure the robot is idle before starting new motion planning
         self.wait_for_idle()
 
         #TODO: SLOWER JOINT VELOCITIES
@@ -200,28 +193,46 @@ class CuroboTrajectoryNode(Node):
             self.published_trajectory = None
             return response
         target_pose = self.convert_pose_to_target_format(request_pose)
+        target_pose_cuboid = Cuboid("t_pose", dims=[0.3, .3, 0.2], pose=target_pose)
+
+        if self.do_not_persist_voxels:
+            print("using inside target pose callback for debug purpose ")
+            self.update_collision_world(persist=(not self.do_not_persist_voxels), cuboid=target_pose_cuboid)
         
+        ## clear voxels around the target pose
+        self.curoboMotion.clear_bounding_box(target_pose_cuboid)
+
         if request_type == MotionType.FREESPACE:
             offset = -0.1 # -Z offset w.r.t ee goal frame
             self.curoboMotion.release_constraint()
         elif request_type == MotionType.BOX_OUT:
-            offset = -0.45
+            offset = -0.3
             self.curoboMotion.set_constraint()
         elif request_type == MotionType.SHELF_OUT:
             offset = -0.20
             self.curoboMotion.set_constraint()
-        elif request_type == MotionType.BOX_IN or request_type == MotionType.SHELF_IN:
+        elif request_type == MotionType.BOX_IN:
+            self.curoboMotion.scale_velocity(0.1)
+            offset = 0.03
+            self.curoboMotion.set_constraint()
+
+        elif request_type == MotionType.SHELF_IN:
             offset = 0.0
             self.curoboMotion.set_constraint()
+
         elif request_type == MotionType.RANDOM:
             offset = 0.0
             self.curoboMotion.release_constraint()
+
         elif request_type == MotionType.APPROACH:
-            offset = 0.02
+            offset = 0.05
+            self.curoboMotion.scale_velocity(0.1)
             self.curoboMotion.set_constraint()
+
         elif request_type == MotionType.HOME:
             offset = 0.0
             self.curoboMotion.release_constraint()
+            
         else:
             self.get_logger().error('Invalid trajectory type.')
             response.success = False
@@ -255,7 +266,7 @@ class CuroboTrajectoryNode(Node):
 
         self.get_logger().info('Published joint trajectory.')
         response.success = True
-        time.sleep(1)
+        time.sleep(8)
         self.get_logger().info("Response success: True")
         # self.wait_until_move()
         self.wait_for_idle()
@@ -317,7 +328,8 @@ class CuroboTrajectoryNode(Node):
 
         return joint_trajectory_msg
     
-    def update_collision_world(self):
+    def update_collision_world(self, persist, target_pose_cuboid=None):
+        self.cam.set_fetch_camera_pose()
         self.camera_data = self.cam.get_data()
         print("Camera Data : ", self.camera_data)
         if self.camera_data is None:
@@ -329,7 +341,7 @@ class CuroboTrajectoryNode(Node):
             position=self.curoboMotion.tensor_args.to_device(camera_position),
             quaternion=self.curoboMotion.tensor_args.to_device(camera_orientation), normalize_rotation=True
             )
-        voxels = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose)
+        voxels = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose, persist, target_pose_cuboid)
         self.publish_voxel_array(voxels.cpu().numpy())
         
     def publish_voxel_array(self, voxels):
@@ -349,15 +361,32 @@ class CuroboTrajectoryNode(Node):
         self.voxel_pub.publish(voxel_array_msg)
         self.get_logger().info(f"Published {voxels.shape[0]} voxels as Float32MultiArray.")
 
+    def debug_loop(self):
+        while rclpy.ok():
+            print("In Debug Loop")
+            target_pose_cuboid = Cuboid("t_pose", dims=[3, 3, 5.0], pose=[0, 0, 0, 1, 0, 0, 0])
+            self.update_collision_world(persist=False, target_pose_cuboid=target_pose_cuboid)
+            time.sleep(0.5)
+
 if __name__ == "__main__":
     rclpy.init()
     cfg = "fetch.yml"
     curobo_node = CuroboTrajectoryNode(cfg)
+    executor = MultiThreadedExecutor()
+    executor.add_node(curobo_node)
+    
     try:
-        rclpy.spin(curobo_node)
+        # Spin the executor to manage callbacks with multiple threads
+        if curobo_node.debug:
+            curobo_node.debug_thread = threading.Thread(target=curobo_node.debug_loop)
+            curobo_node.debug_thread.start()
+
+        executor.spin()
+
     except KeyboardInterrupt:
         pass
     finally:
         # Ensure proper shutdown
+        executor.shutdown()  # Stop the executor
         curobo_node.destroy_node()
         rclpy.shutdown()

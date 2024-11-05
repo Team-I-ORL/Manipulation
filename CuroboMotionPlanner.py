@@ -2,6 +2,7 @@ import torch
 # CuRobo
 # Standard Library
 from typing import List, Optional
+import cv2
 
 # TODO: POSE CONSTRAINTS FOR DIFFERENT FLAGS (OPERATION PICK OR PLACE)
 # Implemented picking/placing pose cost metric based on suction_status (NEED TO TEST)
@@ -63,14 +64,35 @@ class CuroboMotionPlanner:
         self.motion_gen = None
         self.plan_config = None
         self.trajectories = []
-    
+
+
+        # collision parameters
+        self.voxel_size = 0.02
+
+        #debug 
+        self.show_window = False    
+
     def load_stage(self):
         # Load fetch mobile base from world config path
         mobile_base_cfg = WorldConfig.from_dict(
             load_yaml(join_path(get_world_configs_path(), "collision_fetch_base.yml"))
         )
 
-        world_cfg = WorldConfig(cuboid=mobile_base_cfg.cuboid)
+        # world_cfg = WorldConfig(cuboid=mobile_base_cfg.cuboid)
+
+        world_cfg = WorldConfig.from_dict(
+                {
+                    "blox": {
+                        "world": {
+                            "pose": [0, 0, 0, 1, 0, 0, 0],
+                            "integrator_type": "occupancy",
+                            "voxel_size": 0.02,
+                        }
+                    }
+                }
+            )
+        world_cfg.add_obb(cuboid=mobile_base_cfg.cuboid)
+        
         # world_cfg = WorldConfig.create_obb_world(world_cfg)
         return world_cfg   
     
@@ -278,8 +300,10 @@ class CuroboMotionPlanner:
             return None
         
     # update blox given camera data in dict format and camera pose relative to the planning base frame
-    def update_blox_from_camera(self, camera_data, camera_pose) -> None:
-        self.world_model.decay_layer("world")
+    def update_blox_from_camera(self, camera_data, camera_pose, persist=True, cuboid=None) -> None:
+        if not persist:
+            self.world_model.decay_layer("world")
+
         data_camera = CameraObservation(depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
                                         pose=camera_pose)
         
@@ -288,9 +312,11 @@ class CuroboMotionPlanner:
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
-        bounding = Cuboid("t", dims=[2, 2, 2.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        bounding = Cuboid("t", dims=[3, 3, 3.0], pose=[0, 0, 0, 1, 0, 0, 0])
         # bounding = Cuboid("t", dims=[2, 2, 2], pose=[0.5, 0.5, 0.5, 1, 0, 0, 0])
 
+        if cuboid is not None:
+            self.clear_bounding_box(cuboid, "world")
 
         print("Depth Image (sample):", camera_data["depth"][0:5, 0:5])  # Sample depth values
         print("Bounding Box:", bounding)
@@ -332,6 +358,61 @@ class CuroboMotionPlanner:
 
         return voxels    
     
+    def clear_bounding_box(
+    self,
+    cuboid: Cuboid,
+    layer_name: Optional[str] = None,
+    ):
+        """Clear occupied regions of a voxel layer using the given bounding box.
+
+        Args:
+            cuboid: Bounding box to clear, defined as a Cuboid object.
+            layer_name: Name of the voxel layer where the region will be cleared.
+        """
+        if layer_name is None:
+            print("Layer name must be provided to clear the bounding box.")
+            return
+
+        if self._voxel_tensor_list is None:
+            print("Voxel tensor list is not initialized.")
+            return
+
+        print("Voxel tensor list:", self._voxel_tensor_list)
+        try:
+            # Get the environment index and the voxel grid index
+            env_idx = 0  # Assuming a single environment setup
+            obs_idx = self.world_model.get_voxel_idx(layer_name, env_idx)
+
+            # Extract the pose and dimensions of the bounding box
+            pose_mat = cuboid.pose.get_matrix().view(4, 4).cpu().numpy()
+            dims = np.array(cuboid.dims)
+
+            # Calculate the range of voxel indices to clear based on the voxel size
+            voxel_size = self.world_model._voxel_tensor_list[0][env_idx, obs_idx, 3].item()
+            min_coords = np.floor((pose_mat[:3, 3] - dims / 2) / voxel_size).astype(int)
+            max_coords = np.ceil((pose_mat[:3, 3] + dims / 2) / voxel_size).astype(int)
+
+            # Clip the ranges to stay within the bounds of the voxel grid
+            voxel_grid = self.world_model._voxel_tensor_list[3][env_idx, obs_idx]
+            grid_shape = voxel_grid.shape[:3]
+            min_coords = np.clip(min_coords, 0, np.array(grid_shape) - 1)
+            max_coords = np.clip(max_coords, 0, np.array(grid_shape) - 1)
+
+            # Iterate over the voxel grid and clear voxels within the bounding box
+            for x in range(min_coords[0], max_coords[0] + 1):
+                for y in range(min_coords[1], max_coords[1] + 1):
+                    for z in range(min_coords[2], max_coords[2] + 1):
+                        voxel_grid[x, y, z] = -1.0 * self.max_esdf_distance
+
+            # Update the voxel tensor with the cleared values
+            self._voxel_tensor_list[3][env_idx, obs_idx] = voxel_grid
+            print(f"Cleared bounding box in layer '{layer_name}' successfully.")
+        except ValueError:
+            print(f"Layer name '{layer_name}' not found in voxel names.")
+        except Exception as e:
+            print(f"An error occurred while clearing the bounding box: {e}")
+
+
     # def generate_trajectory(self,
     #                    initial_js: List[float],
     #                    goal_ee_pose: List[float] = None,

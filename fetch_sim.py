@@ -31,6 +31,10 @@ from curobo.util_file import (
     join_path,
     load_yaml,
 )
+import torch
+from matplotlib import cm
+
+
 add_extensions(simulation_app) # Also enables ROS2
 curoboMotion = CuroboMotionPlanner("fetch.yml")
 
@@ -43,7 +47,7 @@ class IsaacSim(Node):
 
         self.ros_world = World(stage_units_in_meters=1.0)
         stage = self.ros_world.stage
-        # self.ros_world.scene.add_default_ground_plane()
+        self.ros_world.scene.add_default_ground_plane()
 
         # add and load fetch
         robot_cfg = curoboMotion.robot_cfg
@@ -68,6 +72,7 @@ class IsaacSim(Node):
         # setup the ROS2 subscriber here
         self.traj_sub = self.create_subscription(JointTrajectory, "joint_trajectory", self.trajectory_callback, 10)
         self.voxel_sub = self.create_subscription(Float32MultiArray, "voxel_array", self.voxel_callback, 10)
+        # self.joint_state_sub = self.create_subscription(JointState, "joint_states", self.joint_state_callback, 10)
 
         self.ros_world.reset()
         self.executing_traj = False
@@ -75,6 +80,8 @@ class IsaacSim(Node):
 
         self.use_debug_draw = True
         render_voxel_size = 0.02
+
+        self.use_direct_joint_state = True
 
         if self.use_debug_draw:
             self.voxel_viewer = VoxelManager(100, size=render_voxel_size)
@@ -93,6 +100,13 @@ class IsaacSim(Node):
         self.executing_traj = True
         self.initial_state = data.points[0].positions
         self.joint_name_msg = data.joint_names
+
+    def joint_state_callback(self, msg):
+        """Callback to directly set joint states from the topic."""
+        if self.use_direct_joint_state:
+            idx_list = [self.robot.get_dof_index(name) for name in msg.name if name in self.j_names]
+            if idx_list:
+                self.robot.set_joint_positions(msg.position, idx_list)
 
     def voxel_callback(self, data):
         # convert flattened data back to 3D array
@@ -157,7 +171,7 @@ class IsaacSim(Node):
             if step_index < 20:
                 continue
 
-            if self.executing_traj:
+            if self.executing_traj and not self.use_direct_joint_state:
                 self.robot.set_joint_positions(self.initial_state, idx_list)
                 print("Received trajectory")
                 for point in self.trajectory_msg.points:
