@@ -82,21 +82,21 @@ class CuroboMotionPlanner:
 
         # TODO: 
 
-        world_cfg = WorldConfig.from_dict(
-                {
-                    "blox": {
-                        "world": {
-                            "pose": [0, 0, 0, 1, 0, 0, 0],
-                            "integrator_type": "occupancy",
-                            "voxel_size": 0.02,
-                        }
-                    }
-                }
-            )
-        # world_cfg = WorldConfig(cylinder=mobile_base_cfg.cylinder)
-        # world_cfg = WorldConfig.create_obb_world(world_cfg)
+        # world_cfg = WorldConfig.from_dict(
+        #         {
+        #             "blox": {
+        #                 "world": {
+        #                     "pose": [0, 0, 0, 1, 0, 0, 0],
+        #                     "integrator_type": "occupancy",
+        #                     "voxel_size": 0.02,
+        #                 }
+        #             }
+        #         }
+        #     )
+        world_cfg = WorldConfig(cylinder=mobile_base_cfg.cylinder)
+        world_cfg = WorldConfig.create_obb_world(world_cfg)
 
-        world_cfg.add_obstacle(mobile_base_cfg.cylinder)
+        # world_cfg.add_obstacle(mobile_base_cfg.cylinder)
         # world_cfg = WorldConfig.create_collision_support_world(world_cfg)
         return world_cfg   
     

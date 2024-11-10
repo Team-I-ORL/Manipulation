@@ -18,13 +18,18 @@ from curobo.util.usd_helper import UsdHelper
 from curobo.types.base import TensorDeviceType
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Bool
+from shape_msgs.msg import Mesh, MeshTriangle
+from geometry_msgs.msg import Point
+# from omni.isaac.core.objects import DynamicMesh
+from omni.isaac.core.utils.stage import get_current_stage
+from pxr import UsdGeom, Vt
 
 import numpy as np
 from typing import List
 import rclpy
 from rclpy.node import Node
-from CuroboMotionPlanner import CuroboMotionPlanner
+from temp_CuroboMotionPlanner import CuroboMotionPlanner
 from curobo.util_file import (
     get_robot_configs_path,
     get_world_configs_path,
@@ -72,6 +77,8 @@ class IsaacSim(Node):
         # setup the ROS2 subscriber here
         self.traj_sub = self.create_subscription(JointTrajectory, "joint_trajectory", self.trajectory_callback, 10)
         self.voxel_sub = self.create_subscription(Float32MultiArray, "voxel_array", self.voxel_callback, 10)
+        self.update_collision_env_sub = self.create_subscription(Bool, "update_collsion_env", self.coll_env_callback, 10)
+        # self.mesh_sub = self.create_subscription(Mesh, "mesh", self.mesh_callback, 10)
         # self.joint_state_sub = self.create_subscription(JointState, "joint_states", self.joint_state_callback, 10)
 
         self.ros_world.reset()
@@ -81,10 +88,11 @@ class IsaacSim(Node):
         self.use_debug_draw = True
         render_voxel_size = 0.02
 
-        self.use_direct_joint_state = True
+        self.use_direct_joint_state = False
 
         if self.use_debug_draw:
             self.voxel_viewer = VoxelManager(100, size=render_voxel_size)
+            self.mesh = None
     
     
     def trajectory_callback(self, data):
@@ -119,6 +127,64 @@ class IsaacSim(Node):
 
         self.voxel_viewer.update_voxels(voxels[:, :3])
 
+    def coll_env_callback(self, data):
+        # clear the voxels if the value is False
+        if (data == False):
+            self.voxel_viewer.clear()
+    
+    def mesh_callback(self, msg): 
+        # vertices = []
+        # for vertex in msg.vertices:
+        #     vertices.append([vertex.x, vertex.y, vertex.z])
+        
+        # faces = []
+        # for triangle in msg.triangles:
+        #     faces.append([triangle.vertex_indices[0], triangle.vertex_indices[1], triangle.vertex_indices[2]])
+
+        # # If this is the first update, create the mesh in Isaac Sim
+        # if self.mesh is None:
+        #     self.mesh = DynamicMesh(
+        #         name="ros_mesh",
+        #         vertices=vertices,
+        #         faces=faces,
+        #         position=[0, 0, 0],
+        #         scale=[1, 1, 1]
+        #     )
+        # else:
+        #     # Update the vertices and faces in Isaac Sim
+        #     self.mesh.update_mesh(vertices=vertices, faces=faces)
+        
+        # self.get_logger().info("Mesh updated in Isaac Sim.")
+        vertices = [[vertex.x, vertex.y, vertex.z] for vertex in msg.vertices]
+        faces = [[triangle.vertex_indices[0], triangle.vertex_indices[1], triangle.vertex_indices[2]] for triangle in msg.triangles]
+
+        # Call the function to add or update the mesh in the existing stage
+        mesh_prim = self.add_mesh_to_curobo(vertices, faces)
+        self.get_logger().info("Mesh added or updated in Isaac Sim under '/curobo' Xform.")
+
+    def add_mesh_to_curobo(self, vertices, faces):
+        # Get the current USD stage
+        stage = get_current_stage()
+        
+        # Define the mesh path within the existing "/curobo" Xform
+        mesh_path = "/curobo/ROS_Mesh"
+        mesh_prim = stage.GetPrimAtPath(mesh_path)
+        
+        if not mesh_prim:
+            # Create the mesh geometry under "/curobo" if it doesn't already exist
+            mesh_prim = UsdGeom.Mesh.Define(stage, mesh_path)
+            print(f"Mesh defined at {mesh_path}.")
+        else:
+            print(f"Updating existing mesh at {mesh_path}.")
+        
+        # Set mesh vertices and faces
+        mesh_prim.GetPointsAttr().Set(Vt.Vec3fArray([Vt.Vec3f(*vertex) for vertex in vertices]))
+        mesh_prim.GetFaceVertexIndicesAttr().Set(Vt.IntArray([index for face in faces for index in face]))
+        mesh_prim.GetFaceVertexCountsAttr().Set(Vt.IntArray([3] * len(faces)))  # Assuming triangles
+
+        # Additional attributes like normals or colors can be added if needed
+        return mesh_prim
+    
     def draw_points(self, voxels):
         # Third Party
         from omni.isaac.debug_draw import _debug_draw

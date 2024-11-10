@@ -64,10 +64,10 @@ class CuroboMotionPlanner:
         self.motion_gen = None
         self.plan_config = None
         self.trajectories = []
-
+        self.last_added_object = None
 
         # collision parameters
-        self.voxel_size = 0.02
+        self.voxel_size = 0.05
 
         #debug 
         self.show_window = False    
@@ -86,12 +86,12 @@ class CuroboMotionPlanner:
                         "world": {
                             "pose": [0, 0, 0, 1, 0, 0, 0],
                             "integrator_type": "occupancy",
-                            "voxel_size": 0.02,
+                            "voxel_size": 0.05,
                         }
                     }
                 }
             )
-        world_cfg.add_obb(cuboid=mobile_base_cfg.cuboid)
+        # world_cfg.add_obb(cuboid=mobile_base_cfg.cuboid)
         
         # world_cfg = WorldConfig.create_obb_world(world_cfg)
         return world_cfg   
@@ -104,10 +104,10 @@ class CuroboMotionPlanner:
             self.tensor_args,
             collision_cache={"obb": 200, "mesh": 100},
             interpolation_dt=0.01,
-            trajopt_tsteps=24,
-            use_cuda_graph=False,
+            trajopt_tsteps=32,
+            use_cuda_graph=True,
             project_pose_to_goal_frame=True,
-            minimize_jerk=True,
+            minimize_jerk=False,
         )
 
         self.motion_gen = MotionGen(motion_gen_config)
@@ -128,11 +128,11 @@ class CuroboMotionPlanner:
 
         config_args = {
             'max_attempts': 100,
-            'enable_graph': False,
+            'enable_graph': True,
             'enable_finetune_trajopt': True,
-            'partial_ik_opt': False,
+            'partial_ik_opt': True,
             'parallel_finetune': True,
-            'enable_graph_attempt': None,
+            'enable_graph_attempt': 100,
             # 'pose_cost_metric': pose_cost,
         }
         
@@ -142,24 +142,26 @@ class CuroboMotionPlanner:
     def setup_motion_planner_with_collision_avoidance(self):
         print("world_cfg", self.world_cfg)
         motion_gen_config = MotionGenConfig.load_from_robot_config(
-            self.robot_cfg,
+          self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
-            collision_cache={"obb": 200, "mesh": 100, "voxels":100},
-            trajopt_tsteps=24,
+            collision_cache={"obb": 200, "mesh": 1000, "voxels":1000},
+            trajopt_tsteps=32,
             collision_checker_type=CollisionCheckerType.BLOX,
-            use_cuda_graph=True,
+            interpolation_dt=0.01,
+            use_cuda_graph=False,
+            project_pose_to_goal_frame=True,
+            minimize_jerk=True,
             num_trajopt_seeds=12,
             num_graph_seeds=12,
-            interpolation_dt=0.01,
-            collision_activation_distance=0.025,
-            acceleration_scale=1.0,
+            collision_activation_distance=0.01,
             self_collision_check=True,
-            maximum_trajectory_dt=0.25,
-            finetune_dt_scale=1.05,
-            fixed_iters_trajopt=True,
+            maximum_trajectory_dt=2.0,
+            fixed_iters_trajopt=None,
             finetune_trajopt_iters=300,
-            minimize_jerk=True,
+            num_ik_seeds = 12,
+            position_threshold=0.1,
+            rotation_threshold=0.1,
         )
         self.motion_gen = MotionGen(motion_gen_config)
         print("warming up..")
@@ -179,12 +181,13 @@ class CuroboMotionPlanner:
         )
 
         config_args = {
-            'max_attempts': 100,
+            'max_attempts': 10,
             'enable_graph': False,
-            'enable_finetune_trajopt': True,
+            'enable_finetune_trajopt': False,
             'partial_ik_opt': False,
-            'parallel_finetune': True,
-            'enable_graph_attempt': None,
+            'ik_fail_return': 100,
+            'parallel_finetune': False,
+            # 'enable_graph_attempt': None,
             # 'pose_cost_metric': pose_cost,
         }
         
@@ -248,9 +251,48 @@ class CuroboMotionPlanner:
         self.plan_config.time_dilation_factor = scale
         print("Setting Time Dilation Factor (Speed): ", self.plan_config.time_dilation_factor)
 
+
+    def create_and_attach_object(self, ee_pos, initial_js) -> None:
+        cu_js = JointState.from_position(
+            position=self.tensor_args.to_device(initial_js),
+            joint_names=self.j_names[0 : len(initial_js)],
+        )
+
+        # TODO: This function does not clear out previously attached objects and will cause memory leakage!
+        # Can be avoided for now simply by calling this function sparingly
+        if self.last_added_object is not None:
+            self.world_cfg.remove_obstacle(self.last_added_object)
+        # USE FK TO FIND WHERE TO PLACE OBJECT
+        ee_pos = self.motion_gen.ik_solver.fk(cu_js.position).ee_position.squeeze().cpu().numpy()
+        print("EE Position: ", ee_pos)
+        object = Cuboid(
+            name="object",
+            pose=[ee_pos[0], ee_pos[1], ee_pos[2], 1.0, 0.0, 0.0, 0.0],
+            dims=[0.1, 0.2, 0.055], # length, width, height (0.1, 0.2 are like shelf orientation)
+            )
+        
+        
+        self.world_cfg.add_obstacle(object)
+        self.last_added_object = 'object'
+        self.motion_gen.update_world(self.world_cfg)
+        self.robot_cfg["kinematics"]["extra_collision_spheres"] = {"attached_object": 20}
+
+        self.motion_gen.detach_object_from_robot()
+        self.motion_gen.attach_external_objects_to_robot(
+            joint_state=cu_js,
+            external_objects=[object],
+            surface_sphere_radius=0.005,
+            sphere_fit_type=SphereFitType.SAMPLE_SURFACE,
+        )
+        
+    def detach_obj(self) -> None:
+        self.detach = True
+        self.motion_gen.detach_spheres_from_robot()
+
     def generate_trajectory(self,
                        initial_js: List[float],
                        goal_ee_pose: List[float] = None,
+                       goal_js_pose: List[float] = None,
     ):
         # if goal_ee_pose is not None and goal_js is None:
         if goal_ee_pose is not None:
@@ -277,7 +319,28 @@ class CuroboMotionPlanner:
             except Exception as e:
                 print("Error in planning trajectory: ", e)
                 return None
+        elif goal_js_pose is not None:
+            initial_js = JointState.from_position(
+                position=self.tensor_args.to_device([initial_js]),
+                joint_names=self.j_names[0 : len(initial_js)],
+            )        
+            goal_js_pose = [1.2, -0.41, -0.52, 1.1, 0.44, 0.89, -0.75]
 
+            goal_js = JointState.from_position(
+                position=self.tensor_args.to_device([goal_js_pose]),
+                joint_names=self.j_names[0 : len(goal_js_pose)],
+            )
+            
+            try:
+                motion_gen_result = self.motion_gen.plan_single_js(
+                    initial_js, goal_js, self.plan_config
+                )
+                reach_succ = motion_gen_result.success.item()
+                interpolated_solution = motion_gen_result.get_interpolated_plan() 
+
+            except Exception as e:
+                print("Error in planning trajectory: ", e)
+                return None
         else:
             raise ValueError("Check Goal EE Pose")
         
@@ -300,29 +363,34 @@ class CuroboMotionPlanner:
             return None
         
     # update blox given camera data in dict format and camera pose relative to the planning base frame
-    def update_blox_from_camera(self, camera_data, camera_pose, persist=True, cuboid=None) -> None:
+    def update_blox_from_camera(self, camera_data, camera_pose, persist=True) -> None:
         if not persist:
             self.world_model.decay_layer("world")
+            print(" Cleared the world layer")
 
-        data_camera = CameraObservation(depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
+        data_camera = CameraObservation(rgb_image = camera_data["rgba"], depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
                                         pose=camera_pose)
-        
+        print(" camera observation set ")
         self.world_model.add_camera_frame(data_camera, "world")
-        self.world_model.process_camera_frames("world", False)
+        self.world_model.process_camera_frames("world", process_aux=True)
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
+        print("update blox steps done")
         bounding = Cuboid("t", dims=[3, 3, 3.0], pose=[0, 0, 0, 1, 0, 0, 0])
         # bounding = Cuboid("t", dims=[2, 2, 2], pose=[0.5, 0.5, 0.5, 1, 0, 0, 0])
 
-        if cuboid is not None:
-            self.clear_bounding_box(cuboid, "world")
-
-        print("Depth Image (sample):", camera_data["depth"][0:5, 0:5])  # Sample depth values
-        print("Bounding Box:", bounding)
-
-        voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
-        print("Voxels before filtering:", voxels)
+        try:
+            voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
+            # mesh = self.world_model.get_mesh_in_bounding_box(bounding, )
+            # mesh = self.world_model.get_mesh_from_blox_layer(layer_name = "world", mode="voxel")
+            print("Voxels before filtering:", voxels)
+        except Exception as e:
+            print("Error : ", e)
+            voxels = None
+        mesh = None
+        
+    
         if voxels.shape[0] > 0:
             voxels = voxels[voxels[:, 2] > self.voxel_size]
             voxels = voxels[voxels[:, 0] > 0.0]
@@ -339,7 +407,7 @@ class CuroboMotionPlanner:
         
         if self.show_window:
             depth_image = camera_data["depth"].cpu().numpy()
-            color_image = camera_data["raw_rgb"].cpu().numpy()
+            # color_image = camera_data["raw_rgb"].cpu().numpy()
             depth_colormap = cv2.applyColorMap(
                 cv2.convertScaleAbs(depth_image, alpha=100), cv2.COLORMAP_VIRIDIS
             )
@@ -356,7 +424,7 @@ class CuroboMotionPlanner:
             if key & 0xFF == ord("q") or key == 27:
                 cv2.destroyAllWindows()
 
-        return voxels    
+        return voxels, mesh    
     
     def clear_bounding_box(
     self,
@@ -373,11 +441,11 @@ class CuroboMotionPlanner:
             print("Layer name must be provided to clear the bounding box.")
             return
 
-        if self._voxel_tensor_list is None:
+        if self.world_model._voxel_tensor_list is None:
             print("Voxel tensor list is not initialized.")
             return
 
-        print("Voxel tensor list:", self._voxel_tensor_list)
+        print("Voxel tensor list:", self.world_model._voxel_tensor_list)
         try:
             # Get the environment index and the voxel grid index
             env_idx = 0  # Assuming a single environment setup

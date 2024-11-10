@@ -46,9 +46,11 @@ class CameraLoader():
     def rgb_callback(self, data):
         try:
             rgb_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='rgb8')
-            rgb_tensor = torch.from_numpy(rgb_image).permute(2, 0, 1).float()   
-            self.camera_data["raw_rgb"] = rgb_tensor     
+            rgb_tensor = torch.from_numpy(rgb_image).float()   
+            self.camera_data["raw_rgb"] = rgb_tensor
+            # print("rgb tensor  shape : ", rgb_tensor.shape)
             rgba = torch.cat([rgb_tensor, torch.ones_like(rgb_tensor[:, :, 0:1]) * 255], dim=-1)
+            # print("rgba shape : ", rgba.shape)
             self.camera_data["rgba"] = rgba
             # self.node.get_logger().info("RGBA image data updated in camera_data dictionary.")
         except Exception as e:
@@ -63,7 +65,7 @@ class CameraLoader():
             self.camera_data["depth"] = depth_tensor
             # self.node.get_logger().info("Depth image data updated in camera_data dictionary.")
         except Exception as e:
-            self.node.get_logger().error(f"Failed to convert depth image: {e}")
+            self.node.get_logger().error(f"Failed in getting depth image: {e}")
     
     def pose_callback(self, data):
         # goes in as a float

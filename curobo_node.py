@@ -5,10 +5,15 @@ from rclpy.node import Node
 import numpy as np
 import threading
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
 # Import ROS2 message types
 from std_msgs.msg import Bool, Int32
 from geometry_msgs.msg import PoseStamped
+from shape_msgs.msg import Mesh, MeshTriangle
+from geometry_msgs.msg import Point
+from std_msgs.msg import Header
 from enum import Enum
 from orbiter_bt.srv import MoveArm
 import time
@@ -52,7 +57,8 @@ class Status(Enum):
 class CuroboTrajectoryNode(Node):
     def __init__(self, cfg):
         super().__init__('curobo_trajectory_node')
-        self.condition = threading.Condition()
+        self.arm_callback_group = MutuallyExclusiveCallbackGroup()
+        self.srv_callback_group = MutuallyExclusiveCallbackGroup()
 
         self.nvblox = os.getenv("NVBLOX", False) == "true"
         self.debug = os.getenv("DEBUG", False) == "true"
@@ -77,8 +83,13 @@ class CuroboTrajectoryNode(Node):
         self.start_js = None
 
         # Create the service
-        self.target_srv = self.create_service(MoveArm, 'target_pose', self.target_pose_callback)
-
+        self.target_srv = self.create_service(
+            MoveArm, 
+            'target_pose', 
+            self.target_pose_callback, 
+            callback_group=self.srv_callback_group
+            )
+        
         # Subscriber for joint state messages
         self.joint_state_subscriber = self.create_subscription(
             JointState,
@@ -98,6 +109,7 @@ class CuroboTrajectoryNode(Node):
             "robot_arm_status",
             self.manipulator_status_callback,
             10,
+            callback_group=self.arm_callback_group
         )
 
         self.robot_status = None
@@ -111,15 +123,16 @@ class CuroboTrajectoryNode(Node):
         self.gripper_status = None
 
         if self.nvblox:
-            self.collision_env_sub = self.create_subscription(Bool, 'update_collision_env', self.udpate_env, 10)
+            self.collision_env_sub = self.create_subscription(Bool, 'update_collision_env', self.udpate_env, 10, callback_group=MutuallyExclusiveCallbackGroup())
 
             self.voxel_pub = self.create_publisher(Float32MultiArray, 'voxel_array', 10)
+            self.mesh_pub = self.create_publisher(Mesh, 'mesh', 10)
             ## TODO: Replace continous subsription with invoked subscription for lower network load
             self.cam = CameraLoader(self)
-            self.create_subscription( Image, '/head_camera/rgb/image_raw', self.cam.rgb_callback, 1)
-            self.create_subscription( Image, '/head_camera/depth/image_rect_raw', self.cam.depth_callback,1 )
+            self.create_subscription( Image, '/head_camera/rgb/image_raw', self.cam.rgb_callback, 1, callback_group=MutuallyExclusiveCallbackGroup())
+            self.create_subscription( Image, '/head_camera/depth/image_rect_raw', self.cam.depth_callback,1, callback_group=MutuallyExclusiveCallbackGroup() )
             # self.create_subscription( Pose, '/camera/pose', self.pose_callback)
-            self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback, 1)
+            self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback, 1, callback_group=MutuallyExclusiveCallbackGroup())
             self.cam.set_fetch_camera_pose()
                 
         self.lock = threading.Lock()
@@ -132,10 +145,12 @@ class CuroboTrajectoryNode(Node):
         
     def wait_for_idle(self):
         # Wait for the robot to become idle using the condition variable
-        with self.condition:
-            while rclpy.ok() and (self.robot_status == Status.ACTIVE or self.robot_status == Status.PREEMPTING):
-                self.get_logger().info("Robot is moving; waiting to become idle...")
-                self.condition.wait(timeout=0.1)  # Wait with a timeout to allow thread release
+        while rclpy.ok():
+            with self.lock:
+                print(f"Robot status: {self.robot_status}")
+                if self.robot_status not in [Status.ACTIVE, Status.PREEMPTING]:
+                    break
+            time.sleep(1)  # Sleep to prevent busy waiting
             self.get_logger().info("Robot is now idle.")
 
     def gripper_status_callback(self, msg):
@@ -145,10 +160,11 @@ class CuroboTrajectoryNode(Node):
 
     def manipulator_status_callback(self, msg):
         # Update the robot status and notify waiting threads
-        with self.condition:
+        with self.lock:
+            print(msg.data)
             self.robot_status = Status(msg.data)
-            self.get_logger().info(f"Robot status updated: {self.robot_status}")
-            self.condition.notify_all()  # Notify all waiting threads
+            # self.get_logger().info(f"Robot status updated: {self.robot_status}")
+            # self.condition.notify_all()  # Notify all waiting threads
         
     def joint_state_callback(self, msg):
         # Update the latest joint state
@@ -180,7 +196,7 @@ class CuroboTrajectoryNode(Node):
         request_type = MotionType(request.traj_type.data)
         print(request_type)
         print(f"Request pose: {request_pose}")
-        self.wait_for_idle()
+        # self.wait_for_idle()
 
         #TODO: SLOWER JOINT VELOCITIES
         self.curoboMotion.scale_velocity(0.5) # 80% Speed
@@ -194,44 +210,51 @@ class CuroboTrajectoryNode(Node):
             return response
         target_pose = self.convert_pose_to_target_format(request_pose)
         target_pose_cuboid = Cuboid("t_pose", dims=[0.3, .3, 0.2], pose=target_pose)
-
-        if self.do_not_persist_voxels:
-            print("using inside target pose callback for debug purpose ")
-            self.update_collision_world(persist=(not self.do_not_persist_voxels), cuboid=target_pose_cuboid)
         
-        ## clear voxels around the target pose
-        self.curoboMotion.clear_bounding_box(target_pose_cuboid)
 
         if request_type == MotionType.FREESPACE:
-            offset = -0.1 # -Z offset w.r.t ee goal frame
+            offset = -0.2 # -Z offset w.r.t ee goal frame
             self.curoboMotion.release_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", True)
         elif request_type == MotionType.BOX_OUT:
             offset = -0.3
             self.curoboMotion.set_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.SHELF_OUT:
             offset = -0.20
             self.curoboMotion.set_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.BOX_IN:
-            self.curoboMotion.scale_velocity(0.1)
-            offset = 0.03
+            self.curoboMotion.scale_velocity(0.2)
+            offset = 0.01
             self.curoboMotion.set_constraint()
-
+            # self.curoboMotion.release_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.SHELF_IN:
             offset = 0.0
             self.curoboMotion.set_constraint()
-
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.RANDOM:
             offset = 0.0
             self.curoboMotion.release_constraint()
-
         elif request_type == MotionType.APPROACH:
             offset = 0.05
             self.curoboMotion.scale_velocity(0.1)
             self.curoboMotion.set_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
 
         elif request_type == MotionType.HOME:
             offset = 0.0
             self.curoboMotion.release_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", True)
+
             
         else:
             self.get_logger().error('Invalid trajectory type.')
@@ -243,14 +266,16 @@ class CuroboTrajectoryNode(Node):
             target_js = self.curoboMotion.q_start
             trajectory = self.curoboMotion.generate_trajectory(
                 initial_js=initial_js,
-                goal_js_pose=target_js
+                goal_ee_pose=None,
+                goal_js_pose=target_js,
             )
         else:
             target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
+            # target_pose.quaternion = self.curoboMotion.tensor_args.to_device([0.7071, 0.0, 0.7071, 0.0])
             trajectory = self.curoboMotion.generate_trajectory(
                 initial_js=initial_js,
                 goal_ee_pose=target_pose,
-                # suction_status=self.gripper_status
+                goal_js_pose=None,
             )
         
         if trajectory is None:
@@ -266,10 +291,14 @@ class CuroboTrajectoryNode(Node):
 
         self.get_logger().info('Published joint trajectory.')
         response.success = True
-        time.sleep(8)
+        time.sleep(1)
         self.get_logger().info("Response success: True")
-        # self.wait_until_move()
+
         self.wait_for_idle()
+        # if request_type == MotionType.BOX_OUT:
+        #     self.curoboMotion.create_and_attach_object(target_pose, initial_js)
+        response.success = True        
+
         return response
 
     @staticmethod
@@ -282,6 +311,8 @@ class CuroboTrajectoryNode(Node):
         #                pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
 
         # HARD CODING ORIENTATION FOR BOX PICKING BECAUSE ITS A GIVEN --> BASED ON SUCTION_STATUS
+        pose.position.x -= 0.086875
+        pose.position.z += 0.37743
         pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
                        pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
         
@@ -328,10 +359,10 @@ class CuroboTrajectoryNode(Node):
 
         return joint_trajectory_msg
     
-    def update_collision_world(self, persist, target_pose_cuboid=None):
+    def update_collision_world(self, persist):
         self.cam.set_fetch_camera_pose()
         self.camera_data = self.cam.get_data()
-        print("Camera Data : ", self.camera_data)
+        # print("Camera Data : ", self.camera_data)
         if self.camera_data is None:
             raise ValueError('Camera data not available.')
         # add in robot planning base frame - should be a constant or can get from tf
@@ -341,8 +372,12 @@ class CuroboTrajectoryNode(Node):
             position=self.curoboMotion.tensor_args.to_device(camera_position),
             quaternion=self.curoboMotion.tensor_args.to_device(camera_orientation), normalize_rotation=True
             )
-        voxels = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose, persist, target_pose_cuboid)
-        self.publish_voxel_array(voxels.cpu().numpy())
+        voxels, mesh = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose, persist)
+        # print("Mesh :: ", mesh)
+        if voxels is not None:
+            self.publish_voxel_array(voxels.cpu().numpy())
+        if mesh is not None:
+            self.publish_mesh_array(mesh)
         
     def publish_voxel_array(self, voxels):
         # Ensure voxels is in (N, 3) format for [x, y, z] coordinates
@@ -361,11 +396,27 @@ class CuroboTrajectoryNode(Node):
         self.voxel_pub.publish(voxel_array_msg)
         self.get_logger().info(f"Published {voxels.shape[0]} voxels as Float32MultiArray.")
 
+    def publish_mesh_array(self, mesh):
+        ros_mesh = Mesh()
+
+        # Convert vertices to geometry_msgs/Point format
+        for vertex in mesh.vertices:
+            point = Point(x=float(vertex[0]), y=float(vertex[1]), z=float(vertex[2]))
+            ros_mesh.vertices.append(point)
+
+        # Convert faces to MeshTriangle format
+        for face in mesh.faces:
+            triangle = MeshTriangle(vertex_indices=[int(face[0]), int(face[1]), int(face[2])])
+            ros_mesh.triangles.append(triangle)
+
+        self.mesh_pub.publish(ros_mesh)
+        self.get_logger().info(f"Published mesh with {len(ros_mesh.vertices)} vertices and {len(ros_mesh.triangles)} triangles.")
+
     def debug_loop(self):
         while rclpy.ok():
             print("In Debug Loop")
             target_pose_cuboid = Cuboid("t_pose", dims=[3, 3, 5.0], pose=[0, 0, 0, 1, 0, 0, 0])
-            self.update_collision_world(persist=False, target_pose_cuboid=target_pose_cuboid)
+            self.update_collision_world(persist=False)
             time.sleep(0.5)
 
 if __name__ == "__main__":
