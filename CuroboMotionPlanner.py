@@ -212,8 +212,48 @@ class CuroboMotionPlanner:
             self.world_cfg,
             self.tensor_args,
             num_seeds=20,
+            # use_cuda_graph=False,
         )
         self.ik_solver= IKSolver(ik_solver_config)
+
+
+    def compute_kinematics_batch(self, 
+                                joint_state: List[float],
+                                goal_poses: List[float]):
+        
+        joint_state = self.tensor_args.to_device([joint_state])
+        goal_poses = self.convert_xyzw_poses_to_curobo(goal_poses)
+
+        n_seeds = len(goal_poses)
+        batch = n_seeds
+        initial_seed = joint_state.clone().unsqueeze(0).repeat(n_seeds, batch, 1)
+
+        ik_results = self.motion_gen.ik_solver.solve_any(
+            solve_type=ReacherSolveType.BATCH,
+            retract_config=joint_state,
+            goal_pose=goal_poses,
+            seed_config=initial_seed,
+        )
+        
+        n_success = np.sum(ik_results.success.cpu().numpy())
+        print(f"Successes: {n_success}/{n_seeds}")
+        print(ik_results.debug_info)
+        min_norm = np.inf
+        for ik_result in ik_results.js_solution.position:
+            norm = torch.norm(ik_result - joint_state)
+            if norm.cpu() < min_norm:
+                min_norm = norm
+                best_ik = ik_result.cpu().numpy().tolist()
+                print(best_ik)
+        pose = JointState.from_position(
+                position=self.tensor_args.to_device(best_ik),
+                joint_names=self.j_names[0 : len(best_ik)],
+            )
+        best_pose = self.motion_gen.compute_kinematics(pose)
+        
+        best_pose_out = best_pose.ee_pos_seq[0].cpu().numpy().tolist() + best_pose.ee_quat_seq[0].cpu().numpy().tolist()
+        print("Best Pose: ", best_pose_out)
+        return n_success, best_pose_out
 
     def compute_kinematics_single(self, 
                                 joint_state: List[float],
@@ -234,7 +274,18 @@ class CuroboMotionPlanner:
         success = np.sum(ik_result.success.cpu().numpy()) > 0
         ik_solution = ik_result.js_solution.position.cpu().squeeze().numpy().tolist()
         return success, ik_solution
+    @staticmethod
+    def convert_xyzw_poses_to_curobo(poses: List[List[float]]) -> Pose:
+        """Converts xyzw poses to CuRobo's Pose format."""
+        poses = np.array(poses)
+        pos = torch.from_numpy(poses[:,:3].copy())
+        quat = torch.from_numpy(poses[:,[6,3,4,5]].copy())
 
+        pose = Pose(
+            position=pos.float().cuda(),
+            quaternion=quat.float().cuda(),
+        )
+        return pose
     def generate_yaw_poses(self, goal_ee_pose: List[float]) -> List[Pose]:
         """
         Generates poses with different yaw angles (0, 90, 180, 270 degrees) in the gripper frame.

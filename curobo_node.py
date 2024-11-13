@@ -199,7 +199,7 @@ class CuroboTrajectoryNode(Node):
         print(f"Request pose: {request_pose.pose.position}")
         # self.wait_for_idle()
 
-
+        
         #TODO: SLOWER JOINT VELOCITIES
         self.curoboMotion.scale_velocity(0.5) # 80% Speed
         
@@ -219,19 +219,19 @@ class CuroboTrajectoryNode(Node):
         best_pose = None
         ik_found = False
 
-        for pose in possible_poses:
-            # print(f"Trying pose: {pose}")
-            # Check IK feasibility of each target pose
-            ik_success, computed_js = self.curoboMotion.compute_kinematics_single(initial_js, pose)
-            if ik_success:
-                # Calculate the joint state norm difference from the initial joint state
-                temp_norm = np.linalg.norm(np.array(computed_js) - np.array(initial_js))
-                if temp_norm < js_norm:
-                    js_norm = temp_norm
-                    best_js = computed_js
-                    best_pose = pose
-                    ik_found = True
-
+        # for pose in possible_poses:
+        #     # print(f"Trying pose: {pose}")
+        #     # Check IK feasibility of each target pose
+        #     ik_success, computed_js = self.curoboMotion.compute_kinematics_single(initial_js, pose)
+        #     if ik_success:
+        #         # Calculate the joint state norm difference from the initial joint state
+        #         temp_norm = np.linalg.norm(np.array(computed_js) - np.array(initial_js))
+        #         if temp_norm < js_norm:
+        #             js_norm = temp_norm
+        #             best_js = computed_js
+        #             best_pose = pose
+        #             ik_found = True
+        ik_found, best_pose = self.curoboMotion.compute_kinematics_batch(initial_js, possible_poses)
         # Check if a feasible IK solution was found
         if not ik_found:
             self.get_logger().error('IK Fail.')
@@ -241,9 +241,12 @@ class CuroboTrajectoryNode(Node):
 
         # Use the best pose with the least deviation in joint space
         target_pose = best_pose
-
+        if target_pose is None:
+            self.get_logger().error('Failed to find a feasible IK solution. Check Reachability.')
+            response.success = False
+            self.published_trajectory = None
+            return response
         self.get_logger().info('IK Success.')
-        target_pose_cuboid = Cuboid("t_pose", dims=[0.3, .3, 0.2], pose=target_pose)
         
 
         if request_type == MotionType.FREESPACE:
@@ -296,6 +299,7 @@ class CuroboTrajectoryNode(Node):
             self.published_trajectory = None
             return response
         
+        print("Start Planning Trajectory")
         if request_type == MotionType.HOME:
             target_js = self.curoboMotion.q_start
             trajectory = self.curoboMotion.go_home(initial_js, target_js)
@@ -341,8 +345,8 @@ class CuroboTrajectoryNode(Node):
         #                pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
 
         # HARD CODING ORIENTATION FOR BOX PICKING BECAUSE ITS A GIVEN --> BASED ON SUCTION_STATUS
-        # pose.position.x -= 0.086875
-        # pose.position.z += 0.37743
+        pose.position.x -= 0.086875
+        pose.position.z += 0.37743
         pose_curobo = [pose.position.x, pose.position.y, pose.position.z,
                        pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z] 
         
