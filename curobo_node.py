@@ -113,14 +113,14 @@ class CuroboTrajectoryNode(Node):
         )
 
         self.robot_status = None
-        # Subscriber for gripper status messages
-        self.gripper_status_subscriber = self.create_subscription(
-            Bool,
-            'suction_status',
-            self.gripper_status_callback,
-            10)
+        # # Subscriber for gripper status messages
+        # self.gripper_status_subscriber = self.create_subscription(
+        #     Bool,
+        #     'suction_status',
+        #     self.gripper_status_callback,
+        #     10)
 
-        self.gripper_status = None
+        # self.gripper_status = None
 
         if self.nvblox:
             self.collision_env_sub = self.create_subscription(Bool, 'update_collision_env', self.udpate_env, 10, callback_group=MutuallyExclusiveCallbackGroup())
@@ -150,21 +150,21 @@ class CuroboTrajectoryNode(Node):
                 print(f"Robot status: {self.robot_status}")
                 if self.robot_status not in [Status.ACTIVE, Status.PREEMPTING]:
                     break
-            time.sleep(1)  # Sleep to prevent busy waiting
-            self.get_logger().info("Robot is now idle.")
+            time.sleep(0.5)  # Sleep to prevent busy waiting
+            self.get_logger().info("Robot is not idle.")
 
-    def gripper_status_callback(self, msg):
-        if self.gripper_status != msg.data:
-            print(f"Changed gripper status: {msg.data}")
-            self.gripper_status = msg.data
+    # def gripper_status_callback(self, msg):
+    #     if self.gripper_status != msg.data:
+    #         print(f"Changed gripper status: {msg.data}")
+    #         self.gripper_status = msg.data
 
     def manipulator_status_callback(self, msg):
         # Update the robot status and notify waiting threads
         with self.lock:
             print(msg.data)
             self.robot_status = Status(msg.data)
-            # self.get_logger().info(f"Robot status updated: {self.robot_status}")
-            # self.condition.notify_all()  # Notify all waiting threads
+        # self.get_logger().info(f"Robot status updated: {self.robot_status}")
+        # self.condition.notify_all()  # Notify all waiting threads
         
     def joint_state_callback(self, msg):
         # Update the latest joint state
@@ -197,7 +197,7 @@ class CuroboTrajectoryNode(Node):
         print(request_type)
         print(f"Request pose: {request_pose}")
         # self.wait_for_idle()
-
+        self.robot_status = Status.ACTIVE
         #TODO: SLOWER JOINT VELOCITIES
         self.curoboMotion.scale_velocity(0.5) # 80% Speed
         
@@ -223,7 +223,7 @@ class CuroboTrajectoryNode(Node):
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.SHELF_OUT:
-            offset = -0.20
+            offset = -0.25
             self.curoboMotion.set_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
@@ -286,6 +286,9 @@ class CuroboTrajectoryNode(Node):
 
         joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
         self.published_trajectory = joint_trajectory_msg
+        # self.robot_status = Status.ACTIVE
+
+
         self.trajectory_publisher.publish(joint_trajectory_msg)
         self.start_js = initial_js
 

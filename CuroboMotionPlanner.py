@@ -146,7 +146,7 @@ class CuroboMotionPlanner:
             self.world_cfg,
             self.tensor_args,
             collision_cache={"obb": 200, "mesh": 1000, "voxels":1000},
-            trajopt_tsteps=32,
+            trajopt_tsteps=64,
             collision_checker_type=CollisionCheckerType.BLOX,
             interpolation_dt=0.01,
             use_cuda_graph=False,
@@ -154,7 +154,7 @@ class CuroboMotionPlanner:
             minimize_jerk=True,
             num_trajopt_seeds=12,
             num_graph_seeds=12,
-            collision_activation_distance=0.01,
+            collision_activation_distance=0.001,
             self_collision_check=True,
             maximum_trajectory_dt=2.0,
             fixed_iters_trajopt=None,
@@ -294,6 +294,7 @@ class CuroboMotionPlanner:
                        goal_ee_pose: List[float] = None,
                        goal_js_pose: List[float] = None,
     ):
+        
         # if goal_ee_pose is not None and goal_js is None:
         if goal_ee_pose is not None:
 
@@ -324,7 +325,7 @@ class CuroboMotionPlanner:
                 position=self.tensor_args.to_device([initial_js]),
                 joint_names=self.j_names[0 : len(initial_js)],
             )        
-            goal_js_pose = [1.2, -0.41, -0.52, 1.1, 0.44, 0.89, -0.75]
+            goal_js_pose = [1.3056849, 1.4040100, -0.34258141, 1.743283, 0.017052, 1.627947, -0.129718]
 
             goal_js = JointState.from_position(
                 position=self.tensor_args.to_device([goal_js_pose]),
