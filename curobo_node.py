@@ -74,6 +74,7 @@ class CuroboTrajectoryNode(Node):
             self.curoboMotion.setup_motion_planner_with_collision_avoidance()
         else:
             self.curoboMotion.setup_motion_planner()  # Warmup happens here
+            self.curoboMotion.setup_ik_solver()
 
         # Load the world and robot configurations for ISAAC SIM
         self.world_cfg = self.curoboMotion.world_cfg
@@ -147,21 +148,21 @@ class CuroboTrajectoryNode(Node):
         # Wait for the robot to become idle using the condition variable
         while rclpy.ok():
             with self.lock:
-                print(f"Robot status: {self.robot_status}")
+                # print(f"Robot status: {self.robot_status}")
                 if self.robot_status not in [Status.ACTIVE, Status.PREEMPTING]:
                     break
             time.sleep(0.5)  # Sleep to prevent busy waiting
             self.get_logger().info("Robot is not idle.")
 
-    # def gripper_status_callback(self, msg):
-    #     if self.gripper_status != msg.data:
-    #         print(f"Changed gripper status: {msg.data}")
-    #         self.gripper_status = msg.data
+    def gripper_status_callback(self, msg):
+        if self.gripper_status != msg.data:
+            # print(f"Changed gripper status: {msg.data}")
+            self.gripper_status = msg.data
 
     def manipulator_status_callback(self, msg):
         # Update the robot status and notify waiting threads
         with self.lock:
-            print(msg.data)
+            # print(msg.data)
             self.robot_status = Status(msg.data)
         # self.get_logger().info(f"Robot status updated: {self.robot_status}")
         # self.condition.notify_all()  # Notify all waiting threads
@@ -182,7 +183,7 @@ class CuroboTrajectoryNode(Node):
         ))
         try:
             initial_js = [joint_positions[joint_name] for joint_name in self.curoboMotion.j_names]
-            print(self.curoboMotion.j_names)
+            # print(self.curoboMotion.j_names)
         except KeyError as e:
             self.curoboMotion.j_names
             self.get_logger().error(f'Joint name {e} not found in joint states.')
@@ -193,23 +194,58 @@ class CuroboTrajectoryNode(Node):
     def target_pose_callback(self, request, response):
         response.success = False
         request_pose = request.target_pose
-        request_type = MotionType(request.traj_type.data)
+        request_type = MotionType(int(request.traj_type.data))
         print(request_type)
-        print(f"Request pose: {request_pose}")
+        print(f"Request pose: {request_pose.pose.position}")
         # self.wait_for_idle()
         self.robot_status = Status.ACTIVE
         #TODO: SLOWER JOINT VELOCITIES
         self.curoboMotion.scale_velocity(0.5) # 80% Speed
         
-        initial_js = self.get_current_joint_positions()
+        initial_js = self.get_current_joint_positions() # List of joint positions
 
         if request_pose is None and initial_js is None:
             self.get_logger().error('Cannot generate trajectory without current joint positions.')
             response.success = False
             self.published_trajectory = None
             return response
-        target_pose = self.convert_pose_to_target_format(request_pose)
-        target_pose_cuboid = Cuboid("t_pose", dims=[0.3, .3, 0.2], pose=target_pose)
+        target_pose = self.convert_pose_to_target_format(request_pose) # List: [x, y, z, w, x, y, z]
+
+        # Generate other possible yaw poses for the target pose
+        possible_poses = self.curoboMotion.generate_yaw_poses(target_pose)
+        js_norm = np.inf
+        best_js = None
+        best_pose = None
+        ik_found = False
+
+        # for pose in possible_poses:
+        #     # print(f"Trying pose: {pose}")
+        #     # Check IK feasibility of each target pose
+        #     ik_success, computed_js = self.curoboMotion.compute_kinematics_single(initial_js, pose)
+        #     if ik_success:
+        #         # Calculate the joint state norm difference from the initial joint state
+        #         temp_norm = np.linalg.norm(np.array(computed_js) - np.array(initial_js))
+        #         if temp_norm < js_norm:
+        #             js_norm = temp_norm
+        #             best_js = computed_js
+        #             best_pose = pose
+        #             ik_found = True
+        ik_found, best_pose = self.curoboMotion.compute_kinematics_batch(initial_js, possible_poses)
+        # Check if a feasible IK solution was found
+        if not ik_found:
+            self.get_logger().error('IK Fail.')
+            response.success = False
+            self.published_trajectory = None
+            return response
+
+        # Use the best pose with the least deviation in joint space
+        target_pose = best_pose
+        if target_pose is None:
+            self.get_logger().error('Failed to find a feasible IK solution. Check Reachability.')
+            response.success = False
+            self.published_trajectory = None
+            return response
+        self.get_logger().info('IK Success.')
         
 
         if request_type == MotionType.FREESPACE:
@@ -262,13 +298,10 @@ class CuroboTrajectoryNode(Node):
             self.published_trajectory = None
             return response
         
+        print("Start Planning Trajectory")
         if request_type == MotionType.HOME:
             target_js = self.curoboMotion.q_start
-            trajectory = self.curoboMotion.generate_trajectory(
-                initial_js=initial_js,
-                goal_ee_pose=None,
-                goal_js_pose=target_js,
-            )
+            trajectory = self.curoboMotion.go_home(initial_js, target_js)
         else:
             target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
             # target_pose.quaternion = self.curoboMotion.tensor_args.to_device([0.7071, 0.0, 0.7071, 0.0])
@@ -425,6 +458,7 @@ class CuroboTrajectoryNode(Node):
 if __name__ == "__main__":
     rclpy.init()
     cfg = "fetch.yml"
+    cfg = "config/fetch.yml"
     curobo_node = CuroboTrajectoryNode(cfg)
     executor = MultiThreadedExecutor()
     executor.add_node(curobo_node)
