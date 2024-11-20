@@ -320,12 +320,6 @@ class CuroboTrajectoryNode(Node):
         elif request_type == MotionType.RANDOM:
             offset = 0.0
             self.curoboMotion.release_constraint()
-        # elif request_type == MotionType.APPROACH:
-        #     offset = 0.05
-        #     self.curoboMotion.scale_velocity(0.1)
-        #     self.curoboMotion.set_constraint()
-        #     if self.nvblox:
-        #         self.curoboMotion.world_model.enable_obstacle("world", False)
 
         elif request_type == MotionType.HOME:
             offset = 0.0
