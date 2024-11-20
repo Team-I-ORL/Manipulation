@@ -241,7 +241,7 @@ class CuroboMotionPlanner:
         self.plan_config = MotionGenPlanConfig(**config_args)
         self.trajopt_solver = self.motion_gen.trajopt_solver
 
-    def setup_ik_solver(self):
+    def _solver(setup_ikself):
         ik_solver_config = IKSolverConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
@@ -668,7 +668,113 @@ class CuroboMotionPlanner:
         else:
             print("Failed to reach goal")
             return None
+    
+
+    ############################################
+    # TODO: NEED IK SOLVER
+    # START-> TARGET POSE IK -> INTERMEDIARY IK (HOVER)
+    # MOTION_GEN JS PLANNING
+    # START -> INTERMEDIARY -> TARGET POSE
+    # STRETCH: MAYBE CONCAT THE TRAJ
+        # RESTOCKING
+        # start to freespace + freespace to box_in
+        # stop there because of suction
+        # box_in to box_out + freespace_aruco + drop_in
+        # shelf_out + restock_home
+
+        # DELIVERY
+        # home to freespace_aruco to shelf_in
+        # shelf_out + home (or just reverse above)
+    ############################################
+
+    def ik_goal_generator(self, initial_js, intermediary_pose, target_pose):
+        initial_joint_state = self.tensor_args.to_device([initial_joint_state])
+        initial_seed = initial_joint_state.detach().clone().unsqueeze(0)
+        goal_pose = Pose(
+            position=self.tensor_args.to_device(goal_pose[0:3]),
+            quaternion=self.tensor_args.to_device(goal_pose[3:]),
+        )
+        ik_goal = self.motion_gen.ik_solver.solve_single(
+                    goal_pose=goal_pose,
+                    retract_config=initial_joint_state,
+                    seed_config=initial_seed,
+                    )
+        success = np.sum(ik_goal.success.cpu().numpy()) > 0
+        if not success:
+            print("Target Pose NOT reachable")
+            return None
+
+        # NOW FIND IK FROM GOAL TO INTERMEDIARY
         
+        goal_solution = ik_goal.js_solution.position.squeeze(0)
+        goal_seed = goal_solution.detach().clone().unsqueeze(0)
+
+        intermediary_pose = Pose(
+            position=self.tensor_args.to_device(intermediary_pose[0:3]),
+            quaternion=self.tensor_args.to_device(intermediary_pose[3:])
+        )
+        
+        ik_intermediary = self.motion_gen.ik_solver.solve_single(
+                    goal_pose=intermediary_pose,
+                    retract_config=goal_solution,
+                    seed_config=goal_seed,
+        )
+
+        success2 = np.sum(ik_intermediary.success.cpu().numpy()) > 0
+        if not success2:
+            print("Intermediary Pose solution not found")
+            return None
+        
+        return success2, ik_intermediary
+    
+    # AFTER IKs ARE FOUND FOR GOAL AND INTERMEDIARY, FIND A PATH TO GOAL USING PLAN_SINGLE_JS
+    def generate_free_to_box_path(self, 
+                                  initial_js,
+                                  intermediary_js,
+                                  goal_js):
+        initial_js = JointState.from_position(
+            position=self.tensor_args.to_device([initial_js]),
+            joint_names=self.j_names[0 : len(initial_js)],
+        )        
+        # goal_js_pose = [1.3056849, 1.4040100, -0.34258141, 1.743283, 0.017052, 1.627947, -0.129718]
+        # goal_js_pose = self.q_start
+        goal_js = JointState.from_position(
+            position=self.tensor_args.to_device([goal_js_pose]),
+            joint_names=self.j_names[0 : len(goal_js_pose)],
+        )
+        
+        try:
+            motion_gen_result = self.motion_gen.plan_single_js(
+                initial_js, goal_js, self.plan_config
+            )
+            reach_succ = motion_gen_result.success.item()
+            print("Success (should only have one): ", reach_succ)
+            interpolated_solution = motion_gen_result.get_interpolated_plan() 
+
+        except Exception as e:
+            
+            print("Error in planning trajectory: ", e)
+            return None
+
+        
+        if reach_succ:      
+            solution_dict = {
+                "success": motion_gen_result.success.item(),
+                "joint_names": interpolated_solution.joint_names,
+                "positions": interpolated_solution.position.cpu().squeeze().numpy().tolist(),
+                "velocities": interpolated_solution.velocity.cpu().squeeze().numpy().tolist(),
+                "accelerations": interpolated_solution.acceleration.cpu().squeeze().numpy().tolist(),
+                "jerks": interpolated_solution.jerk.cpu().squeeze().numpy().tolist(),
+                "interpolation_dt": motion_gen_result.interpolation_dt,
+                "raw_data": interpolated_solution,
+            }
+            
+            return solution_dict
+        
+        else:
+            print("Failed to reach goal")
+            return None
+
     # update blox given camera data in dict format and camera pose relative to the planning base frame
     def update_blox_from_camera(self, camera_data, camera_pose, persist=True) -> None:
         if not persist:
