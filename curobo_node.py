@@ -67,6 +67,7 @@ class CuroboTrajectoryNode(Node):
         self.arm_callback_group = MutuallyExclusiveCallbackGroup()
         self.srv_callback_group = MutuallyExclusiveCallbackGroup()
         self.robot_callback_group = MutuallyExclusiveCallbackGroup()
+        self.traj_point_callback_group = MutuallyExclusiveCallbackGroup()
         self.nvblox = os.getenv("NVBLOX", False) == "true"
         self.debug = os.getenv("DEBUG", False) == "true"
         self.do_not_persist_voxels = os.getenv("DO_NOT_PERSIST_VOXELS", False) == "true"
@@ -104,7 +105,7 @@ class CuroboTrajectoryNode(Node):
             'joint_states',
             self.joint_state_callback,
             10)
-
+        
         # Publisher for joint trajectory messages
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory,
@@ -131,6 +132,14 @@ class CuroboTrajectoryNode(Node):
             callback_group=self.arm_callback_group
         )
 
+        self.last_traj_sub = self.create_subscription(
+            JointTrajectoryPoint,
+            "last_traj_point",
+            self.last_traj_callback,
+            10,
+            callback_group=self.traj_point_callback_group
+        )
+
         self.robot_status = None
         self.torso_status = None
         self.torso_joint = ["torso_lift_joint"]
@@ -150,8 +159,13 @@ class CuroboTrajectoryNode(Node):
                 
         self.lock = threading.Lock()
         self.published_trajectory = None
+        self.last_traj_point = None
 
         self.get_logger().info('Curobo Trajectory Node has been started.')
+
+    def last_traj_callback(self, msg):
+        with self.lock:
+            self.last_traj_point = msg.positions
 
     def udpate_env(self, msg):
         self.update_collision_world(persist = msg.data)
@@ -385,8 +399,6 @@ class CuroboTrajectoryNode(Node):
                 # target_pose.position = initial_pose.ee_pos + target_pose.pos
                 # target_pose.quaternion = initial_pose.ee_quat_seq
 
-
-
             target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
 
             # target_pose.quaternion = self.curoboMotion.tensor_args.to_device([0.7071, 0.0, 0.7071, 0.0])
@@ -405,8 +417,7 @@ class CuroboTrajectoryNode(Node):
 
         joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
         self.published_trajectory = joint_trajectory_msg
-        # self.robot_status = Status.ACTIVE
-
+        # print(self.published_trajectory)
         self.publish_until_moving(joint_trajectory_msg)
     
         # self.trajectory_publisher.publish(joint_trajectory_msg)
@@ -418,12 +429,33 @@ class CuroboTrajectoryNode(Node):
         self.get_logger().info("Response success: True")
 
         self.wait_for_idle()
+
+        # print(self.last_traj_point)
+        idx = self.find_position_in_solution(trajectory, self.last_traj_point)
+        print(idx)
+        print(len(trajectory["positions"]))
         # if request_type == MotionType.BOX_OUT:
         #     self.curoboMotion.create_and_attach_object(target_pose, initial_js)
         response.success = True        
         print("Response success: True")
         return response
+    def find_position_in_solution(self, solution_dict, target_position, tolerance=1e-3):
+        """
+        Finds the index of a target position in the solution dictionary's positions list.
 
+        :param solution_dict: A dictionary containing the trajectory data, including "positions".
+        :param target_position: The position array (list or array) to find.
+        :param tolerance: Tolerance for floating-point comparison.
+        :return: Index of the matching position in the solution_dict, or -1 if not found.
+        """
+        target_array = np.array(target_position)
+        positions = solution_dict["positions"]
+
+        for i, pos in enumerate(positions):
+            if np.allclose(pos, target_array, atol=tolerance):
+                return i
+
+        return -1  # Return -1 if no match is found
     @staticmethod
     def convert_pose_to_target_format(pose_msg):
         # Extract the pose from PoseStamped
