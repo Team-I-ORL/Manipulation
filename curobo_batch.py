@@ -23,7 +23,7 @@ from sensor_msgs.msg import JointState, Image, CameraInfo
 # Import curobo utilities (update these imports as needed)
 from curobo.util_file import get_robot_configs_path, get_assets_path
 # Import your CuroboMotionPlanner class
-from CuroboMotionPlanner import CuroboMotionPlanner
+from CuroboMotionPlanner import CuroboMotionPlanner, print_cuda_memory
 from curobo.types.state import JointState as JointStateC
 from fetch_camera import CameraLoader
 from std_msgs.msg import Float32MultiArray
@@ -44,10 +44,6 @@ class MotionType(Enum):
     APPROACH = 6
     HOME = 7
     RESTOCK_HOME = 8
-    SHELF = 9
-    BOX = 10
-    FREESPACE_ARUCO = 11
-    DROP_IN = 12
 
 class Status(Enum):
     PENDING = 0
@@ -66,7 +62,7 @@ class CuroboTrajectoryNode(Node):
         super().__init__('curobo_trajectory_node')
         self.arm_callback_group = MutuallyExclusiveCallbackGroup()
         self.srv_callback_group = MutuallyExclusiveCallbackGroup()
-        self.robot_callback_group = MutuallyExclusiveCallbackGroup()
+
         self.nvblox = os.getenv("NVBLOX", False) == "true"
         self.debug = os.getenv("DEBUG", False) == "true"
         self.do_not_persist_voxels = os.getenv("DO_NOT_PERSIST_VOXELS", False) == "true"
@@ -216,25 +212,10 @@ class CuroboTrajectoryNode(Node):
         
         return initial_js
     
-    def publish_until_moving(self, joint_trajectory_msg):
-        while rclpy.ok():
-            with self.lock:
-                print(f"Robot status: {self.robot_status}")
-                if self.robot_status not in [Status.ACTIVE, Status.PREEMPTING]:
-                    self.trajectory_publisher.publish(joint_trajectory_msg)
-                    print("Published Trajectory")
-                else:
-                    break
-            time.sleep(0.5)  # Sleep to prevent busy waiting
-            self.get_logger().info("Waiting for robot to receive message")
-
     def target_pose_callback(self, request, response):
         response.success = False
         request_pose = request.target_pose
         request_type = MotionType(int(request.traj_type.data))
-        print(f"Request type: {request_type}")
-
-
         if request_type == MotionType.TORSO_DOWN:
             torso_pose = Float64MultiArray()
             torso_pose.data = [float(0.054)]
@@ -254,15 +235,15 @@ class CuroboTrajectoryNode(Node):
             response.success = True
             return response
             
-        print(f"Request pose: {request_pose.pose.position}")
+        print(f"Request pose: {request_pose.pose.position} {request_pose.pose.orientation}")
         # self.wait_for_idle()
-        # self.robot_status = Status.ACTIVE
+        self.robot_status = Status.ACTIVE
         #TODO: SLOWER JOINT VELOCITIES
-        self.curoboMotion.scale_velocity(1.0) # 50% Speed
+        # self.curoboMotion.scale_velocity(0.5) # 50% Speed
         
         initial_js = self.get_current_joint_positions() # List of joint positions
-        
-        if request_pose is None or initial_js is None:
+
+        if request_pose is None and initial_js is None:
             self.get_logger().error('Cannot generate trajectory without current joint positions.')
             response.success = False
             self.published_trajectory = None
@@ -274,58 +255,67 @@ class CuroboTrajectoryNode(Node):
             response.success = False
             self.published_trajectory = None
             return response
-
-
-        if request_type == MotionType.FREESPACE:
-            offset = -0.20 # -Z offset w.r.t ee goal frame
-            self.curoboMotion.release_constraint()
-            if self.nvblox:
-                self.curoboMotion.world_model.enable_obstacle("world", True)
         
-        elif request_type == MotionType.FREESPACE_ARUCO: #11
-            offset = -0.32 # -Z offset w.r.t ee goal frame
+        # traj_result = self.curoboMotion.generate_batch_trajectory(initial_js, target_pose)
+        # joint_trajectory_msg = self.create_joint_trajectory_message(traj_result)
+        # self.published_trajectory = joint_trajectory_msg
+        # # self.robot_status = Status.ACTIVE
+
+
+        # self.trajectory_publisher.publish(joint_trajectory_msg)
+        # self.start_js = initial_js
+
+        # self.get_logger().info('Published joint trajectory.')
+        # response.success = True
+        # time.sleep(1)
+        # self.get_logger().info("Response success: True")
+
+        # self.wait_for_idle()
+        # # if request_type == MotionType.BOX_OUT:
+        # #     self.curoboMotion.create_and_attach_object(target_pose, initial_js)
+        # response.success = True        
+        # print("Response success: True")
+        # return response
+    
+
+    
+        if request_type == MotionType.FREESPACE:
+            offset = -0.2 # -Z offset w.r.t ee goal frame
             self.curoboMotion.release_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", True)
-        elif request_type == MotionType.DROP_IN: #12
-            offset = -0.10
-            self.curoboMotion.set_constraint()
-            if self.nvblox:
-                self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.BOX_OUT:
-            offset = -0.25
+            offset = -0.3
             self.curoboMotion.set_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
-                
         elif request_type == MotionType.SHELF_OUT:
-            offset = -0.20
+            offset = -0.15
             self.curoboMotion.set_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.BOX_IN:
-            self.curoboMotion.scale_velocity(0.5)
+            # self.curoboMotion.scale_velocity(0.2)
             offset = 0.01
             self.curoboMotion.set_constraint()
             # self.curoboMotion.release_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
         elif request_type == MotionType.SHELF_IN:
-            self.curoboMotion.scale_velocity(0.6)
-            offset = 0.02
+            # self.curoboMotion.scale_velocity(0.2)
+            offset = 0.0
             self.curoboMotion.set_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
-
         elif request_type == MotionType.RANDOM:
             offset = 0.0
             self.curoboMotion.release_constraint()
-        # elif request_type == MotionType.APPROACH:
-        #     offset = 0.05
-        #     self.curoboMotion.scale_velocity(0.1)
-        #     self.curoboMotion.set_constraint()
-        #     if self.nvblox:
-        #         self.curoboMotion.world_model.enable_obstacle("world", False)
+        elif request_type == MotionType.APPROACH:
+            offset = 0.05
+            # self.curoboMotion.scale_velocity(0.1)
+            self.curoboMotion.set_constraint()
+            if self.nvblox:
+                self.curoboMotion.world_model.enable_obstacle("world", False)
 
         elif request_type == MotionType.HOME:
             offset = 0.0
@@ -340,19 +330,6 @@ class CuroboTrajectoryNode(Node):
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", True)
             target_js = [0.04053, 1.4964325, -3.116786, 1.518171482376709, 0.00017877879488468335, 1.6613113543554687, -0.0004807466445803637]
-        elif request_type == MotionType.SHELF:
-            offset = 0.0
-            self.curoboMotion.release_constraint()
-            if self.nvblox:
-                self.curoboMotion.world_model.enable_obstacle("world", True)
-            target_js = [0.024427284088, 1.539384231861, -2.982179273468, 2.146720342926, 0.000178778794884, -0.538033757491, 0.001053233836746]
-
-        elif request_type == MotionType.BOX:
-            offset = 0.0
-            self.curoboMotion.release_constraint()
-            if self.nvblox:
-                self.curoboMotion.world_model.enable_obstacle("world", True)
-            target_js = [-0.9182, 0.9012, -2.9196, 1.7214, -0.2233, -2.1655, -0.0001]
 
         else:
             self.get_logger().error('Invalid trajectory type.')
@@ -361,9 +338,7 @@ class CuroboTrajectoryNode(Node):
             return response
 
         print("Start Planning Trajectory")
-        if request_type == MotionType.HOME or request_type == MotionType.RESTOCK_HOME or request_type == MotionType.SHELF or request_type == MotionType.BOX:
-            if request_type == MotionType.RESTOCK_HOME:
-                self.curoboMotion.scale_velocity(0.7)
+        if request_type == MotionType.HOME or request_type == MotionType.RESTOCK_HOME:
             # self.curoboMotion.scale_velocity(0.6)
 
             # target_js = self.curoboMotion.q_start
@@ -375,33 +350,13 @@ class CuroboTrajectoryNode(Node):
             )
 
         else:
-            self.curoboMotion.scale_velocity(0.6)
-            if request_type == MotionType.BOX_OUT or request_type == MotionType.SHELF_OUT:
-                initial_state = JointStateC.from_position(
-                    position=self.curoboMotion.tensor_args.to_device(initial_js),
-                    joint_names=self.j_names
-                )
-
-                initial_pose = self.curoboMotion.motion_gen.compute_kinematics(initial_state)
-                print(initial_pose.ee_pos_seq)
-                print(initial_pose.ee_quat_seq)
-
-                target_pose = initial_pose.ee_pos_seq.squeeze().cpu().tolist() + initial_pose.ee_quat_seq.squeeze().cpu().tolist() 
-                print(target_pose)
-                # target_pose.position = initial_pose.ee_pos + target_pose.pos
-                # target_pose.quaternion = initial_pose.ee_quat_seq
-
-
-
-            target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
-
+            target_pose = self.curoboMotion.compute_intermediary_poses(target_pose, offset)
             # target_pose.quaternion = self.curoboMotion.tensor_args.to_device([0.7071, 0.0, 0.7071, 0.0])
-            trajectory = self.curoboMotion.generate_trajectory(
+            goal_ee_poses = self.curoboMotion.generate_yaw_poses(target_pose)
+            trajectory = self.curoboMotion.generate_batch_trajectory(
                 initial_js=initial_js,
-                goal_ee_pose=target_pose,
-                goal_js_pose=None,
-            )
-            time.sleep(1.0)
+                goal_ee_poses=goal_ee_poses,
+                )
         
         if trajectory is None:
             self.get_logger().error('Failed to generate trajectory.')
@@ -413,12 +368,11 @@ class CuroboTrajectoryNode(Node):
         self.published_trajectory = joint_trajectory_msg
         # self.robot_status = Status.ACTIVE
 
-        self.publish_until_moving(joint_trajectory_msg)
-    
-        # self.trajectory_publisher.publish(joint_trajectory_msg)
+
+        self.trajectory_publisher.publish(joint_trajectory_msg)
         self.start_js = initial_js
 
-        # self.get_logger().info('Published joint trajectory.')
+        self.get_logger().info('Published joint trajectory.')
         response.success = True
         time.sleep(1)
         self.get_logger().info("Response success: True")

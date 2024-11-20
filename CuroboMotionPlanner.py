@@ -13,7 +13,7 @@ import cv2
 # 3. RETREIVE (GO INTO THE SHELF)
 # 4. INVERSE RETREIVE (GO OUT OF THE SHELF)
 import curobo.geom.transform as Transform
-
+import math
 from curobo.geom.types import WorldConfig, Cuboid, Cylinder
 from curobo.geom.sphere_fit import SphereFitType
 from curobo.types.base import TensorDeviceType
@@ -29,12 +29,14 @@ from curobo.util_file import (
 from curobo.wrap.reacher.motion_gen import (
     MotionGen,
     MotionGenConfig,
+    MotionGenResult,
     MotionGenPlanConfig,
     PoseCostMetric
 )
 from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
-from curobo.util.trajectory import get_spline_interpolated_trajectory
+from curobo.util.trajectory import InterpolateType, get_spline_interpolated_trajectory
+
 from curobo.rollout.rollout_base import Goal
 from curobo.wrap.reacher.types import ReacherSolveType
 from curobo.geom.sdf.world import CollisionCheckerType
@@ -43,13 +45,22 @@ from curobo.types.camera import CameraObservation
 import yaml
 import numpy as np
 from math import cos, sin, radians
-
+def print_cuda_memory(tag=None):
+    if tag:
+        print(f"[{tag}] CUDA Memory Report:")
+    else:
+        print("CUDA Memory Report:")
+    print(f"Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
+    print(f"Reserved Memory: {torch.cuda.memory_reserved() / (1024**2):.2f} MB")
+    print(f"Max Allocated Memory: {torch.cuda.max_memory_allocated() / (1024**2):.2f} MB")
+    print(f"Max Reserved Memory: {torch.cuda.max_memory_reserved() / (1024**2):.2f} MB")
+    print("-" * 40)
 class CuroboMotionPlanner:
     def __init__(self, cfg):        
         # Load Robot Configuration
         # self.robot_file = load_yaml(join_path(get_robot_configs_path(), cfg))
 
-        self.robot_file = load_yaml(cfg)
+        self.robot_file = load_yaml(join_path(get_robot_configs_path(), "fetch.yml"))
 
         if self.robot_file is None:
             self.robot_file = load_yaml(join_path(get_robot_configs_path(), "fetch.yml"))
@@ -70,7 +81,7 @@ class CuroboMotionPlanner:
         self.last_added_object = None
 
         # collision parameters
-        self.voxel_size = 0.05
+        self.voxel_size = 0.02
 
         #debug 
         self.show_window = False
@@ -80,11 +91,7 @@ class CuroboMotionPlanner:
 
     def load_stage(self):
         # # Load fetch mobile base from world config path
-        ground = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
-        )
-        ground.cuboid[0].name += "_cuboid"
-        ground.cuboid[0].pose[2] = -10.5
+
 
         # world_cfg = WorldConfig(cuboid=mobile_base_cfg.cuboid)
 
@@ -94,13 +101,19 @@ class CuroboMotionPlanner:
                         "world": {
                             "pose": [0, 0, 0, 1, 0, 0, 0],
                             "integrator_type": "occupancy",
-                            "voxel_size": 0.05,
+                            "voxel_size": 0.02,
                         }
                     }
                 }
             )
-        # world_cfg.add_obb(cuboid=mobile_base_cfg.cuboid)
-        world_cfg = WorldConfig(cuboid=ground.cuboid)
+        ground = WorldConfig.from_dict(
+            load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
+        )
+        ground.cuboid[0].name += "_cuboid"
+        ground.cuboid[0].pose[2] = -0.1
+
+        world_cfg.add_obstacle(ground.cuboid[0])
+        # world_cfg = WorldConfig(cuboid=ground.cuboid)
 
         # world_cfg = WorldConfig.create_obb_world(world_cfg)
         return world_cfg   
@@ -111,21 +124,29 @@ class CuroboMotionPlanner:
             self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
-            collision_cache={"obb": 500, "mesh": 500},
-            interpolation_dt=0.01,
-            trajopt_tsteps=32,
-            js_trajopt_tsteps=64,
+            collision_cache={"obb": 200, "mesh": 200},
+            interpolation_dt=0.1,
             use_cuda_graph=False,
             project_pose_to_goal_frame=True,
-            minimize_jerk=False,
-            position_threshold=0.1,
-            rotation_threshold=0.1,
+            minimize_jerk=True,
+
+            trajopt_tsteps=64,
+            num_trajopt_seeds=3,
+            num_graph_seeds=1,
+            collision_activation_distance=0.001,
+            self_collision_check=True,
+            maximum_trajectory_dt=4.0,
+            fixed_iters_trajopt=None,
+            finetune_trajopt_iters=300,
+            num_ik_seeds = 3,
+            # position_threshold=0.1,
+            # rotation_threshold=0.1,
         )
 
         self.motion_gen = MotionGen(motion_gen_config)
 
         print("Curobo warming up...")
-        self.motion_gen.warmup(enable_graph=True, warmup_js_trajopt=True, parallel_finetune=True)
+        self.motion_gen.warmup(enable_graph=False, warmup_js_trajopt=True, parallel_finetune=True)
         print("CuRobo is Ready")
 
         self.freespace_cost = PoseCostMetric(
@@ -135,16 +156,17 @@ class CuroboMotionPlanner:
 
         self.linear_cost = PoseCostMetric(
             hold_partial_pose = True,
-            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 1, 1]),
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([0, 1, 1, 0, 1, 1]),
         )
 
         config_args = {
-            'max_attempts': 100,
+            'max_attempts': 10,
             'enable_graph': False,
             'enable_finetune_trajopt': True,
-            'partial_ik_opt': True,
-            'parallel_finetune': True,
-            'enable_graph_attempt': 100,
+            'partial_ik_opt': False,
+            'ik_fail_return': 10,
+            # 'parallel_finetune': False,
+            'enable_graph_attempt': None,
             # 'pose_cost_metric': pose_cost,
         }
         
@@ -154,27 +176,39 @@ class CuroboMotionPlanner:
     def setup_motion_planner_with_collision_avoidance(self):
         print("world_cfg", self.world_cfg)
         motion_gen_config = MotionGenConfig.load_from_robot_config(
-          self.robot_cfg,
+            self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
-            collision_cache={"obb": 200, "mesh": 1000, "voxels":1000},
-            trajopt_tsteps=64,
+            collision_cache={"obb": 200, "mesh": 1000, "voxels":10000},
+            trajopt_tsteps=50,
+            interpolation_steps=10000,
             collision_checker_type=CollisionCheckerType.BLOX,
-            interpolation_dt=0.01,
-            use_cuda_graph=False,
+            interpolation_dt=0.1,
+            use_cuda_graph=True,
             project_pose_to_goal_frame=True,
             minimize_jerk=True,
-            num_trajopt_seeds=12,
-            num_graph_seeds=12,
-            collision_activation_distance=0.001,
+            # num_trajopt_seeds=5,
+            num_trajopt_seeds=4,
+            # trajopt_seed_ratio={"linear:": 0.8, "bias": 0.2},
+            # use_start_state_as_retract=True,
+            # interpolation_type=InterpolateType.CUBIC,
+            num_graph_seeds=6,
+            collision_activation_distance=0.01,
             self_collision_check=True,
+            self_collision_opt = True,
             maximum_trajectory_dt=2.0,
-            fixed_iters_trajopt=None,
-            finetune_trajopt_iters=300,
-            num_ik_seeds = 12,
-            position_threshold=0.1,
-            rotation_threshold=0.1,
+            # fixed_iters_trajopt=None,
+            # finetune_trajopt_iters=None,
+            num_ik_seeds = 128,
+            grad_trajopt_iters=200,
+            position_threshold=0.01,
+            rotation_threshold = 0.05,
+            optimize_dt = True,
+            # rotation_threshold=0.1,
         )
+
+
+
         self.motion_gen = MotionGen(motion_gen_config)
         print("warming up..")
         self.motion_gen.warmup(enable_graph=True, warmup_js_trajopt=True, parallel_finetune=True)
@@ -189,16 +223,17 @@ class CuroboMotionPlanner:
 
         self.linear_cost = PoseCostMetric(
             hold_partial_pose = True,
-            hold_vec_weight=self.motion_gen.tensor_args.to_device([1, 1, 1, 0, 1, 1]),
+            hold_vec_weight=self.motion_gen.tensor_args.to_device([0, 1, 1, 0, 1, 1]),
         )
 
         config_args = {
             'max_attempts': 10,
-            'enable_graph': False,
-            'enable_finetune_trajopt': False,
+            'enable_graph': True,
+            'enable_finetune_trajopt': True,
             'partial_ik_opt': False,
             'ik_fail_return': 100,
-            'parallel_finetune': False,
+            'use_start_state_as_retract': True,
+            # 'parallel_finetune': False,
             # 'enable_graph_attempt': None,
             # 'pose_cost_metric': pose_cost,
         }
@@ -291,42 +326,74 @@ class CuroboMotionPlanner:
         Generates poses with different yaw angles (0, 90, 180, 270 degrees) in the gripper frame.
 
         :param goal_ee_pose: A list containing the [x, y, z, qx, qy, qz, qw] of the end-effector pose in the base_link frame.
-        :return: List of Pose objects with different yaw rotations.
+        :return: List of poses with different yaw rotations as lists.
         """
-        # Convert the goal position and quaternion to tensors
-        position = goal_ee_pose[0:3]
-        quaternion = self.tensor_args.to_device(goal_ee_pose[3:]).unsqueeze(0)
+        position = goal_ee_pose[0]
+        quaternion = goal_ee_pose[1]
+        print(position)
+        print(quaternion)
+        # Convert quaternion to a rotation matrix
+        def quaternion_to_matrix(quaternion):
+            qw, qx, qy, qz = quaternion
+            return [
+                [1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+                [2 * (qx * qy + qz * qw), 1 - 2 * (qx**2 + qz**2), 2 * (qy * qz - qx * qw)],
+                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx**2 + qy**2)],
+            ]
 
-        # Convert the quaternion to a 3x3 rotation matrix
-        rotation_matrix = Transform.quaternion_to_matrix(quaternion)
-        
+        # Convert rotation matrix back to a quaternion
+        def matrix_to_quaternion(matrix):
+            m = matrix
+            t = m[0][0] + m[1][1] + m[2][2]
+            if t > 0:
+                s = 0.5 / math.sqrt(t + 1.0)
+                qw = 0.25 / s
+                qx = (m[2][1] - m[1][2]) * s
+                qy = (m[0][2] - m[2][0]) * s
+                qz = (m[1][0] - m[0][1]) * s
+            elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+                s = 2.0 * math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2])
+                qw = (m[2][1] - m[1][2]) / s
+                qx = 0.25 * s
+                qy = (m[0][1] + m[1][0]) / s
+                qz = (m[0][2] + m[2][0]) / s
+            elif m[1][1] > m[2][2]:
+                s = 2.0 * math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2])
+                qw = (m[0][2] - m[2][0]) / s
+                qx = (m[0][1] + m[1][0]) / s
+                qy = 0.25 * s
+                qz = (m[1][2] + m[2][1]) / s
+            else:
+                s = 2.0 * math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1])
+                qw = (m[1][0] - m[0][1]) / s
+                qx = (m[0][2] + m[2][0]) / s
+                qy = (m[1][2] + m[2][1]) / s
+                qz = 0.25 * s
+            return [qx, qy, qz, qw]
+
+        rotation_matrix = quaternion_to_matrix(quaternion)
+
         # Define yaw rotations in the gripper frame
         yaw_angles = [0, 90, 180, 270]
-        yaw_rotations = []
-        
-        for angle in yaw_angles:
-            # Rotation matrix for yaw in gripper frame (around z-axis of gripper)
-            angle_rad = torch.tensor(angle * 3.14159 / 180.0)  # Convert to radians
-            cos_a = torch.cos(angle_rad)
-            sin_a = torch.sin(angle_rad)
-            yaw_rotation_matrix = torch.tensor([
-                [1.0,  0.0,    0.0],
-                [0.0,  cos_a, -sin_a],
-                [0.0,  sin_a,  cos_a]
-            ], device=self.tensor_args.device)
-
-            # Apply yaw rotation in the gripper frame to the original orientation
-            new_rotation_matrix = torch.matmul(rotation_matrix, yaw_rotation_matrix)
-            new_quaternion = Transform.matrix_to_quaternion(new_rotation_matrix)
-            # print("New Quaternion: ", new_quaternion)
-            new_quaternion = new_quaternion.squeeze().cpu().tolist()
-            yaw_rotations.append(new_quaternion)
-
-        # Generate poses with different yaw orientations
         poses = []
-        for yaw_quaternion in yaw_rotations:
-            pose = position+ yaw_quaternion
-            poses.append(pose)
+
+        for angle in yaw_angles:
+            angle_rad = math.radians(angle)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+
+            yaw_rotation_matrix = [
+                [1.0,   0.0,     0.0],
+                [0.0,   cos_a,  -sin_a],
+                [0.0,   sin_a,   cos_a]
+            ]
+
+            # Apply yaw rotation
+            new_rotation_matrix = np.matmul(rotation_matrix, yaw_rotation_matrix)
+            new_quaternion = matrix_to_quaternion(new_rotation_matrix)
+
+            # Combine position and orientation
+            poses.append(position + new_quaternion)
 
         return poses
 
@@ -362,6 +429,8 @@ class CuroboMotionPlanner:
         intermediary_orientation = quaternion
 
         # Create the new intermediary pose
+        # intermediary_pose = intermediary_position.cpu().numpy().tolist() + quaternion.cpu().numpy().tolist()
+        
         intermediary_pose = Pose(
             position=intermediary_position,
             quaternion=intermediary_orientation
@@ -369,6 +438,44 @@ class CuroboMotionPlanner:
         # print(intermediary_pose)
         return intermediary_pose
 
+
+
+    def compute_intermediary_poses(self, goal_ee_pose: List[float], offset_z: float):
+        """
+        Computes an intermediary pose by offsetting the given goal pose along the z-axis of the end-effector.
+        
+        :param goal_ee_pose: A list containing the [x, y, z, qx, qy, qz, qw] of the end-effector pose in the base_link frame.
+        :param offset_z: The offset distance along the z-axis of the end-effector frame (positive values move along the gripper's z-axis).
+        
+        :return: Pose object representing the intermediary pose.
+        """
+        # Convert the goal position and quaternion to tensors
+        position = self.tensor_args.to_device(goal_ee_pose[0:3])
+        
+        # Convert quaternion to tensor and add an extra dimension for batch size
+        quaternion = self.tensor_args.to_device(goal_ee_pose[3:]).unsqueeze(0)
+
+        # Convert the quaternion to a 3x3 rotation matrix
+        rotation_matrix = Transform.quaternion_to_matrix(quaternion)
+
+        # Define the translation offset in the local z-axis of the end-effector
+        local_offset = self.tensor_args.to_device([offset_z, 0.0, 0.0])
+
+        # Apply the translation by transforming the local offset with the rotation matrix
+        # This gives the offset in the world (base_link) frame
+        offset_in_world_frame = torch.matmul(rotation_matrix, local_offset)
+
+        # Compute the intermediary position by adding the offset to the original goal position
+        intermediary_position = position + offset_in_world_frame
+
+        # The orientation (quaternion) remains the same as the goal pose
+        intermediary_orientation = quaternion
+
+        # Create the new intermediary pose
+        intermediary_pose = intermediary_position.cpu().numpy().tolist() + quaternion.cpu().numpy().tolist()
+        
+        # print(intermediary_pose)
+        return intermediary_pose
     def set_constraint(self):
         self.plan_config.pose_cost_metric = self.linear_cost
         
@@ -379,91 +486,116 @@ class CuroboMotionPlanner:
         print("Setting Time Dilation Factor (Speed): ", self.plan_config.time_dilation_factor)
 
 
-    def create_and_attach_object(self, ee_pos, initial_js) -> None:
-        cu_js = JointState.from_position(
-            position=self.tensor_args.to_device(initial_js),
+    # # def create_and_attach_object(self, ee_pos, initial_js) -> None:
+    # #     cu_js = JointState.from_position(
+    # #         position=self.tensor_args.to_device(initial_js),
+    # #         joint_names=self.j_names[0 : len(initial_js)],
+    # #     )
+
+    # #     # TODO: This function does not clear out previously attached objects and will cause memory leakage!
+    # #     # Can be avoided for now simply by calling this function sparingly
+    # #     if self.last_added_object is not None:
+    # #         self.world_cfg.remove_obstacle(self.last_added_object)
+    # #     # USE FK TO FIND WHERE TO PLACE OBJECT
+    # #     ee_pos = self.motion_gen.ik_solver.fk(cu_js.position).ee_position.squeeze().cpu().numpy()
+    # #     print("EE Position: ", ee_pos)
+    # #     object = Cuboid(
+    # #         name="object",
+    # #         pose=[ee_pos[0], ee_pos[1], ee_pos[2], 1.0, 0.0, 0.0, 0.0],
+    # #         dims=[0.1, 0.2, 0.055], # length, width, height (0.1, 0.2 are like shelf orientation)
+    # #         )
+        
+        
+    # #     self.world_cfg.add_obstacle(object)
+    # #     self.last_added_object = 'object'
+    # #     self.motion_gen.update_world(self.world_cfg)
+    # #     self.robot_cfg["kinematics"]["extra_collision_spheres"] = {"attached_object": 20}
+
+    # #     self.motion_gen.detach_object_from_robot()
+    # #     self.motion_gen.attach_external_objects_to_robot(
+    # #         joint_state=cu_js,
+    # #         external_objects=[object],
+    # #         surface_sphere_radius=0.005,
+    # #         sphere_fit_type=SphereFitType.SAMPLE_SURFACE,
+    # #     )
+        
+    # def detach_obj(self) -> None:
+    #     self.detach = True
+    #     self.motion_gen.detach_spheres_from_robot()
+
+    def generate_batch_trajectory(self,
+                          initial_js: List[float],
+                            goal_ee_poses: List[List[float]],
+    ): 
+
+        n = len(goal_ee_poses)
+        print(n)
+        print_cuda_memory("Before Planning")
+        vel = [0.0] * len(initial_js)
+        accel = [0.0] * len(initial_js)
+
+        start_state = JointState(
+            self.tensor_args.to_device([initial_js]*n),
+            self.tensor_args.to_device([vel]*n),
+            self.tensor_args.to_device([accel]*n),
+            tensor_args=self.tensor_args,
+        )
+
+        goal_poses = self.convert_xyzw_poses_to_curobo(goal_ee_poses)
+        print_cuda_memory("Before Planning")
+
+        print(start_state)
+        print(goal_poses)
+        motion_gen_result = self.motion_gen.plan_batch(
+            start_state, goal_poses, self.plan_config
+        )
+        # interpolated_solution = motion_gen_result.get_interpolated_plan()
+        
+        success = motion_gen_result.success.cpu().numpy()
+        print(success)
+        print("Successes: {} out of {}".format(np.sum(success), len(success)))
+        if np.any(success):
+            dts = motion_gen_result.optimized_dt.cpu().numpy().tolist()
+            
+            trajs = motion_gen_result.optimized_plan #MotionGenReulst.optimized_plan
+
+            print(dts)
+        else:
+            return None
+        min_dt = min(dts)  # Find the minimum value
+        best_traj_idx = dts.index(min_dt)
+        best_traj_pos = trajs.position[best_traj_idx]
+        best_traj_vel = trajs.velocity[best_traj_idx]
+        best_traj_acc = trajs.acceleration[best_traj_idx]
+        opt_plan = JointState(
+            position=best_traj_pos,
+            velocity=best_traj_vel,
+            acceleration=best_traj_acc,
             joint_names=self.j_names[0 : len(initial_js)],
         )
-
-        # TODO: This function does not clear out previously attached objects and will cause memory leakage!
-        # Can be avoided for now simply by calling this function sparingly
-        if self.last_added_object is not None:
-            self.world_cfg.remove_obstacle(self.last_added_object)
-        # USE FK TO FIND WHERE TO PLACE OBJECT
-        ee_pos = self.motion_gen.ik_solver.fk(cu_js.position).ee_position.squeeze().cpu().numpy()
-        print("EE Position: ", ee_pos)
-        object = Cuboid(
-            name="object",
-            pose=[ee_pos[0], ee_pos[1], ee_pos[2], 1.0, 0.0, 0.0, 0.0],
-            dims=[0.1, 0.2, 0.055], # length, width, height (0.1, 0.2 are like shelf orientation)
-            )
+        scaled_dt = min_dt * (1.0 / 0.5) #0.5 IS THE TIME DILATION FACTOR IN TENSOR
         
-        
-        self.world_cfg.add_obstacle(object)
-        self.last_added_object = 'object'
-        self.motion_gen.update_world(self.world_cfg)
-        self.robot_cfg["kinematics"]["extra_collision_spheres"] = {"attached_object": 20}
-
-        self.motion_gen.detach_object_from_robot()
-        self.motion_gen.attach_external_objects_to_robot(
-            joint_state=cu_js,
-            external_objects=[object],
-            surface_sphere_radius=0.005,
-            sphere_fit_type=SphereFitType.SAMPLE_SURFACE,
+        opt_plan = opt_plan.scale_by_dt(
+            self.tensor_args.to_device(min_dt), 
+            self.tensor_args.to_device(scaled_dt)
         )
-        
-    def detach_obj(self) -> None:
-        self.detach = True
-        self.motion_gen.detach_spheres_from_robot()
+        solution_dict = {
+            "joint_names": trajs.joint_names,
+            "positions": opt_plan.position.cpu().squeeze().numpy().tolist(),
+            "accelerations": opt_plan.acceleration.cpu().squeeze().numpy().tolist(),
+            "velocities": opt_plan.velocity.cpu().squeeze().numpy().tolist(),
+            "interpolation_dt": scaled_dt,
+            # "raw_data": trajs,
+        }
 
-    def go_home(self,
-                initial_js: List[float],
-                goal_js: List[float]):
-        if goal_js is not None:
-            initial_js = JointState.from_position(
-                position=self.tensor_args.to_device([initial_js]),
-                joint_names=self.j_names[0 : len(initial_js)],
-            )        
-            
-            goal_js = JointState.from_position(
-                position=self.tensor_args.to_device([goal_js]),
-                joint_names=self.j_names[0 : len(goal_js)],
-            )
-            goal = Goal(goal_state=goal_js, current_state=initial_js)
-            motion_gen_result = self.motion_gen.trajopt_solver.solve_any(solve_type=ReacherSolveType.SINGLE, goal=goal)
-            reach_succ = motion_gen_result.success.item()
-            print(self.motion_gen.compute_kinematics(goal_js).ee_pos_seq[0].cpu().numpy())
-            print(self.motion_gen.compute_kinematics(goal_js).ee_quat_seq[0].cpu().numpy())
-
-            if not reach_succ:
-                print("Failed to reach goal")
-                return None
-            interpolated_solution = motion_gen_result.interpolated_solution
-
-
-        else:
-            raise ValueError("Check Goal JS")
-        
-        if reach_succ: 
-            solution_dict = {
-                "success": motion_gen_result.success.item(),
-                "joint_names": interpolated_solution.joint_names,
-                "positions": interpolated_solution.position.cpu().squeeze().numpy().tolist(),
-                "velocities": interpolated_solution.velocity.cpu().squeeze().numpy().tolist(),
-                "accelerations": interpolated_solution.acceleration.cpu().squeeze().numpy().tolist(),
-                "jerks": interpolated_solution.jerk.cpu().squeeze().numpy().tolist(),
-                "interpolation_dt": motion_gen_result.optimized_dt,
-                "raw_data": interpolated_solution,
-            }
-            
-            return solution_dict
+        return solution_dict
     
 
     def generate_trajectory(self,
                        initial_js: List[float],
                        goal_ee_pose: List[float] = None,
                        goal_js_pose: List[float] = None,
-    ):
+    ): 
         
         # if goal_ee_pose is not None and goal_js is None:
         if goal_ee_pose is not None:
@@ -485,6 +617,7 @@ class CuroboMotionPlanner:
                 )
                 print(motion_gen_result.status)
                 reach_succ = motion_gen_result.success.item()
+                print("Success (should only have one): ", reach_succ)
                 interpolated_solution = motion_gen_result.get_interpolated_plan() 
 
             except Exception as e:
@@ -495,8 +628,8 @@ class CuroboMotionPlanner:
                 position=self.tensor_args.to_device([initial_js]),
                 joint_names=self.j_names[0 : len(initial_js)],
             )        
-            goal_js_pose = [1.3056849, 1.4040100, -0.34258141, 1.743283, 0.017052, 1.627947, -0.129718]
-
+            # goal_js_pose = [1.3056849, 1.4040100, -0.34258141, 1.743283, 0.017052, 1.627947, -0.129718]
+            # goal_js_pose = self.q_start
             goal_js = JointState.from_position(
                 position=self.tensor_args.to_device([goal_js_pose]),
                 joint_names=self.j_names[0 : len(goal_js_pose)],
@@ -507,13 +640,16 @@ class CuroboMotionPlanner:
                     initial_js, goal_js, self.plan_config
                 )
                 reach_succ = motion_gen_result.success.item()
+                print("Success (should only have one): ", reach_succ)
                 interpolated_solution = motion_gen_result.get_interpolated_plan() 
 
             except Exception as e:
+                
                 print("Error in planning trajectory: ", e)
                 return None
         else:
             raise ValueError("Check Goal EE Pose")
+        
         
         if reach_succ:      
             solution_dict = {
@@ -537,21 +673,23 @@ class CuroboMotionPlanner:
     def update_blox_from_camera(self, camera_data, camera_pose, persist=True) -> None:
         if not persist:
             self.world_model.decay_layer("world")
+            self.world_model.clear_blox_layer("world")
             print(" Cleared the world layer")
 
-        data_camera = CameraObservation(rgb_image = camera_data["rgba"], depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
-                                        pose=camera_pose)
-        print(" camera observation set ")
-        self.world_model.add_camera_frame(data_camera, "world")
-        self.world_model.process_camera_frames("world", process_aux=True)
-        torch.cuda.synchronize()
-        self.world_model.update_blox_hashes()
+        if persist:
+            data_camera = CameraObservation(rgb_image = camera_data["rgba"], depth_image=camera_data["depth"], intrinsics=camera_data["intrinsics"], 
+                                            pose=camera_pose)
+            print(" camera observation set ")
+            self.world_model.add_camera_frame(data_camera, "world")
+            self.world_model.process_camera_frames("world", process_aux=True)
+            torch.cuda.synchronize()
+            self.world_model.update_blox_hashes()
 
-        print("update blox steps done")
-        bounding = Cuboid("t", dims=[3, 3, 3.0], pose=[0, 0, 0, 1, 0, 0, 0])
-        # bounding = Cuboid("t", dims=[2, 2, 2], pose=[0.5, 0.5, 0.5, 1, 0, 0, 0])
+            print("update blox steps done")
+            # bounding = Cuboid("t", dims=[2, 2, 2], pose=[0.5, 0.5, 0.5, 1, 0, 0, 0])
 
         try:
+            bounding = Cuboid("t", dims=[3, 3, 3.0], pose=[0, 0, 0, 1, 0, 0, 0])
             voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
             # mesh = self.world_model.get_mesh_in_bounding_box(bounding, )
             # mesh = self.world_model.get_mesh_from_blox_layer(layer_name = "world", mode="voxel")
@@ -561,41 +699,41 @@ class CuroboMotionPlanner:
             voxels = None
         mesh = None
         
-    
-        if voxels.shape[0] > 0:
-            voxels = voxels[voxels[:, 2] > self.voxel_size]
-            voxels = voxels[voxels[:, 0] > 0.0]
-            # if args.use_debug_draw:
-            #     draw_points(voxels)
-            # else:
-            #     voxels = voxels.cpu().numpy()
-            #     voxel_viewer.update_voxels(voxels[:, :3])
-            # voxel_viewer.update_voxels(voxels[:, :3])
-        else:
-            pass
-            # if not args.use_debug_draw:
-            #     voxel_viewer.clear()
-        
-        if self.show_window:
-            depth_image = camera_data["depth"].cpu().numpy()
-            # color_image = camera_data["raw_rgb"].cpu().numpy()
-            depth_colormap = cv2.applyColorMap(
-                cv2.convertScaleAbs(depth_image, alpha=100), cv2.COLORMAP_VIRIDIS
-            )
-            # color_image = cv2.flip(color_image, 1)
-            depth_colormap = cv2.flip(depth_colormap, 1)
+        if voxels is not None:
+            if voxels.shape[0] > 0:
+                voxels = voxels[voxels[:, 2] >= self.voxel_size]
+                voxels = voxels[voxels[:, 0] > 0.0]
+                # if args.use_debug_draw:
+                #     draw_points(voxels)
+                # else:
+                #     voxels = voxels.cpu().numpy()
+                #     voxel_viewer.update_voxels(voxels[:, :3])
+                # voxel_viewer.update_voxels(voxels[:, :3])
+            else:
+                pass
+                # if not args.use_debug_draw:
+                #     voxel_viewer.clear()
+            
+            if self.show_window:
+                depth_image = camera_data["depth"].cpu().numpy()
+                # color_image = camera_data["raw_rgb"].cpu().numpy()
+                depth_colormap = cv2.applyColorMap(
+                    cv2.convertScaleAbs(depth_image, alpha=100), cv2.COLORMAP_VIRIDIS
+                )
+                # color_image = cv2.flip(color_image, 1)
+                depth_colormap = cv2.flip(depth_colormap, 1)
 
-            # images = np.hstack((color_image, depth_colormap))
+                # images = np.hstack((color_image, depth_colormap))
 
-            cv2.namedWindow("NVBLOX", cv2.WINDOW_NORMAL)
-            cv2.imshow("NVBLOX", depth_colormap)
-            # cv2.imshow("RGB", color_image)
-            key = cv2.waitKey(1)
-            # Press esc or 'q' to close the image window
-            if key & 0xFF == ord("q") or key == 27:
-                cv2.destroyAllWindows()
+                cv2.namedWindow("NVBLOX", cv2.WINDOW_NORMAL)
+                cv2.imshow("NVBLOX", depth_colormap)
+                # cv2.imshow("RGB", color_image)
+                key = cv2.waitKey(1)
+                # Press esc or 'q' to close the image window
+                if key & 0xFF == ord("q") or key == 27:
+                    cv2.destroyAllWindows()
 
-        return voxels, mesh    
+        return voxels, mesh
     
     def clear_bounding_box(
     self,
@@ -652,183 +790,68 @@ class CuroboMotionPlanner:
             print(f"An error occurred while clearing the bounding box: {e}")
 
 
-    # def generate_trajectory(self,
-    #                    initial_js: List[float],
-    #                    goal_ee_pose: List[float] = None,
-    #                 #    goal_js: Optional[List[float]] = None,
-    #                    suction_status: bool = False,
-    # ):
-    #     # if goal_ee_pose is not None and goal_js is None:
-    #     if goal_ee_pose is not None:
 
-    #         initial_js = JointState.from_position(
-    #             position=self.tensor_args.to_device([initial_js]),
-    #             joint_names=self.j_names[0 : len(initial_js)],
-    #         )
-    #         # initial_ee_pos = self.motion_gen.compute_kinematics(initial_js).ee_pos_seq[0].cpu().numpy()
-            
-    #         goal_pose = Pose(
-    #             position=self.tensor_args.to_device(goal_ee_pose[0:3]),
-    #             quaternion=self.tensor_args.to_device(goal_ee_pose[3:]),
-    #         )
-            
-    #         if suction_status: # IF suction gripper is operating, initialize placing constraint (approach in z direction)
-    #             # TODO: NEED TO GENERATE TWO TRAJECTORIES
-    #             self.plan_config.pose_cost_metric = self.pulling_cost
-    #             # ONE FOR PULLING A BOX OUT OF THE OBJECT (pose constraint everywhere except z)
-    #             # OTHER FOR placing in the box (pose constraint on gripper orientation)
-    #             # CONCATENATE THE TWO TRAJECTORIES AND RETURN
-    #             # MAY CAUSE PROBLEM WHEN USED TO EXECUTE TRAJECTORIES
 
-    #             # ALTERNATIVE:
-    #                 # USE moveit1 for the pulling out part using cartesian planning and use curobo for the placing part
-                
-    #             ##################################### PULL OUT OF BOX #####################################
-    #             # FIRST GOAL POSE IS +Z ABOVE THE INITIAL_JS
-    #             ee_pose = self.motion_gen.ik_solver.fk(self.motion_gen.tensor_args.to_device(initial_js.position))
-    #             ee_pos = ee_pose.ee_position
-    #             ee_pos[0][2] += 0.20 # Move EE z direction up by 20cm
-    #             ee_quat = ee_pose.ee_quaternion
-    #             first_waypoint = Pose(
-    #                 position=ee_pos,
-    #                 quaternion=ee_quat,
-    #             )
-    #             try:
-    #                 waypoint_result = self.motion_gen.plan_single(
-    #                     initial_js, first_waypoint, self.plan_config
-    #                 )
-    #                 reach_succ = waypoint_result.success.item()
-    #             except:
-    #                 return None
-    #             pulling_motion = waypoint_result.get_interpolated_plan()
-    #             print(waypoint_result.get_interpolated_plan().position[-1].cpu().numpy())
-    #             ##################################### PLACING IN THE BOX #####################################
-    #             self.plan_config.pose_cost_metric = self.placing_cost
 
-    #             try:
-    #                 initial_js = JointState.from_position(
-    #                     position=self.tensor_args.to_device([waypoint_result.get_interpolated_plan().position[-1].cpu().numpy()]),
-    #                     joint_names=self.j_names[0 : len(initial_js)],
-    #                 )
 
-    #                 motion_gen_result = self.motion_gen.plan_single(
-    #                     initial_js, goal_pose, self.plan_config
-    #                 )
-    #                 reach_succ = motion_gen_result.success.item()
-    #             except:
-    #                 return None
-    #             waypoint_to_goal_result = motion_gen_result.get_interpolated_plan()
-    #             # SOMETHING LIKE BELOW maybe need to debug
-    #             # Concatenat`ing the positions from the two motions
-    #             concatenated_positions = torch.cat(
-    #                 (pulling_motion.position, waypoint_to_goal_result.position), dim=0
-    #             )
 
-    #             # Optionally, you can also concatenate velocities and other data if needed.
-    #             concatenated_velocities = torch.cat(
-    #                 (pulling_motion.velocity, waypoint_to_goal_result.velocity), dim=0
-    #             )
-    #             concatenated_acceleration = torch.cat(
-    #                 (pulling_motion.acceleration, waypoint_to_goal_result.acceleration), dim=0
-    #             )
-    #             concatenated_jerks = torch.cat(
-    #                 (pulling_motion.jerk, waypoint_to_goal_result.jerk), dim=0
-    #             )
-                
-    #             # Create a new JointState with the concatenated positions
-    #             final_joint_state = JointState(
-    #                 position=concatenated_positions,
-    #                 velocity=concatenated_velocities,
-    #                 acceleration=concatenated_acceleration,
-    #                 jerk=concatenated_jerks,
-    #                 joint_names=self.j_names  # Ensure the joint names are correct
-    #             )
-    #             interpolated_solution = final_joint_state 
+# ##### working params ###### Nov17
+#  self.robot_cfg,
+#             self.world_cfg,
+#             self.tensor_args,
+#             collision_cache={"obb": 200, "mesh": 1000, "voxels":10000},
+#             trajopt_tsteps=40,
+#             interpolation_steps=10000,
+#             collision_checker_type=CollisionCheckerType.BLOX,
+#             interpolation_dt=0.1,
+#             use_cuda_graph=True,
+#             project_pose_to_goal_frame=True,
+#             minimize_jerk=True,
+#             # num_trajopt_seeds=5,
+#             num_trajopt_seeds=4,
+#             # use_start_state_as_retract=True,
+#             # interpolation_type=InterpolateType.CUBIC,
+#             num_graph_seeds=4,
+#             collision_activation_distance=0.03,
+#             self_collision_check=True,
+#             maximum_trajectory_dt=2.0,
+#             # fixed_iters_trajopt=None,
+#             # finetune_trajopt_iters=None,
+#             num_ik_seeds = 32,
+#             grad_trajopt_iters=200,
+#             position_threshold=0.01,
+#             optimize_dt = True
+#             # rotation_threshold=0.1,
 
-    #         else:   # IF suction is not operating, initialize picking cost (approach object in z direction)
-    #             self.plan_config.pose_cost_metric = self.picking_cost
-
-    #             try:
-    #                 motion_gen_result = self.motion_gen.plan_single(
-    #                     initial_js, goal_pose, self.plan_config
-    #                 )
-    #                 reach_succ = motion_gen_result.success.item()
-    #                 interpolated_solution = motion_gen_result.get_interpolated_plan() 
-
-    #             except Exception as e:
-    #                 print("Error in planning trajectory: ", e)
-    #                 return None
-            
-    #     # elif goal_js is not None and goal_ee_pose is None:
-    #     #     initial_js = JointState.from_position(
-    #     #         position=self.tensor_args.to_device([initial_js]),
-    #     #         joint_names=self.j_names[0 : len(initial_js)],
-    #     #     )        
-            
-    #     #     goal_js = JointState.from_position(
-    #     #         position=self.tensor_args.to_device([goal_js]),
-    #     #         joint_names=self.j_names[0 : len(goal_js)],
-    #     #     )
-            
-    #     #     try:
-    #     #         motion_gen_result = self.motion_gen.plan_single_js(
-    #     #             initial_js, goal_js, self.plan_config
-    #     #         )
-    #     #         reach_succ = motion_gen_result.success.item()
-
-    #     #     except:
-    #     #         return None
-    #     else:
-    #         raise ValueError("Either goal_js or goal_ee_pose must be provided.")
-        
-    #     if reach_succ:
-    #         # interpolated_solution = motion_gen_result.get_interpolated_plan() 
-        
-    #         solution_dict = {
-    #             "success": motion_gen_result.success.item(),
-    #             "joint_names": interpolated_solution.joint_names,
-    #             "positions": interpolated_solution.position.cpu().squeeze().numpy().tolist(),
-    #             "velocities": interpolated_solution.velocity.cpu().squeeze().numpy().tolist(),
-    #             "accelerations": interpolated_solution.acceleration.cpu().squeeze().numpy().tolist(),
-    #             "jerks": interpolated_solution.jerk.cpu().squeeze().numpy().tolist(),
-    #             "interpolation_dt": motion_gen_result.interpolation_dt,
-    #             "raw_data": interpolated_solution,
-    #         }
-            
-    #         return solution_dict
-        
-    #     else:
-    #         return None
-        
-        # MAY NEED BELOW IN THE FUTURE
-    # def create_and_attach_object(self, ee_pos, cu_js, radius: int) -> None:
-
-    #     # TODO: This function does not clear out previously attached objects and will cause memory leakage!
-    #     # Can be avoided for now simply by calling this function sparingly
-
-    #     radius *= 0.01
-    #     height = 0.10
-        
-    #     hor_offset = radius # Empirically found
-    #     ver_offset = 0.07
-
-    #     dish_cylinder = Cylinder(
-    #         name="dish",
-    #         pose=[ee_pos[0], ee_pos[1] - hor_offset, ee_pos[2]-ver_offset, 1.0, 0.0, 0.0, 0.0],
-    #         radius=radius,
-    #         height=height, # same height for all the bowls
-    #         )
-    #     self.world_cfg.add_obstacle(dish_cylinder)
-    #     self.motion_gen.update_world(self.world_cfg)
-    #     self.robot_cfg["kinematics"]["extra_collision_spheres"] = {"attached_object": 20}
-
-    #     self.motion_gen.attach_external_objects_to_robot(
-    #         joint_state=cu_js,
-    #         external_objects=[dish_cylinder],
-    #         surface_sphere_radius=0.005,
-    #         sphere_fit_type=SphereFitType.SAMPLE_SURFACE,
-    #     )
-        
-    # def detach_obj(self) -> None:
-    #     self.detach = True
-    #     self.motion_gen.detach_spheres_from_robot()
+# #################################
+############### updated ##########
+# self.robot_cfg,
+#             self.world_cfg,
+#             self.tensor_args,
+#             collision_cache={"obb": 200, "mesh": 1000, "voxels":10000},
+#             trajopt_tsteps=50,
+#             interpolation_steps=5000,
+#             collision_checker_type=CollisionCheckerType.BLOX,
+#             interpolation_dt=0.08,
+#             use_cuda_graph=True,
+#             project_pose_to_goal_frame=True,
+#             minimize_jerk=True,
+#             # num_trajopt_seeds=5,
+#             num_trajopt_seeds=4,
+#             # trajopt_seed_ratio={"linear:": 0.8, "bias": 0.2},
+#             # use_start_state_as_retract=True,
+#             # interpolation_type=InterpolateType.CUBIC,
+#             num_graph_seeds=6,
+#             collision_activation_distance=0.03,
+#             self_collision_check=True,
+#             self_collision_opt = True,
+#             maximum_trajectory_dt=2.0,
+#             # fixed_iters_trajopt=None,
+#             # finetune_trajopt_iters=None,
+#             num_ik_seeds = 128,
+#             grad_trajopt_iters=200,
+#             position_threshold=0.01,
+#             rotation_threshold = 0.1,
+#             optimize_dt = True,
+#             # rotation_threshold=0.1,
+########################################

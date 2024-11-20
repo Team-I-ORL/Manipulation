@@ -251,7 +251,10 @@ collision_spheres:
           "radius": 0.05024
         - "center": [-0.11714, 0.02569, 0.00069]
           "radius": 0.05173
-  
+        - "center": [0.05, 0.02569, 0.00069]
+          "radius": 0.05173
+        - "center": [0.05, 0.02771, 0.00042]
+          "radius": 0.05024
     # r_gripper_finger_link:
     #     - "center": [-0.01, -0.009, -0.004]
     #       "radius": 0.017

@@ -124,7 +124,7 @@ def add_robot_to_scene(
 class VoxelManager:
     def __init__(
         self,
-        num_voxels: int = 5000,
+        num_voxels: int = 10000,
         size: float = 0.02,
         color: List[float] = [1, 1, 1],
         prefix_path: str = "/World/curobo/voxel_",

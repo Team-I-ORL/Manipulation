@@ -91,7 +91,7 @@ class IsaacSim(Node):
         self.use_direct_joint_state = False
 
         if self.use_debug_draw:
-            self.voxel_viewer = VoxelManager(100, size=render_voxel_size)
+            self.voxel_viewer = VoxelManager(10000, size=render_voxel_size)
             self.mesh = None
     
     
@@ -119,12 +119,12 @@ class IsaacSim(Node):
     def voxel_callback(self, data):
         # convert flattened data back to 3D array
         voxels = torch.tensor(data.data, dtype=torch.float32).view(-1, 3)
-        if self.use_debug_draw:
-                    self.draw_points(voxels)
-        else:
-            voxels = voxels.cpu().numpy()
-            self.voxel_viewer.update_voxels(voxels[:, :3])
+        # if self.use_debug_draw:
+        #     self.draw_points(voxels)
+        # else:
+        #     self.voxel_viewer.update_voxels(voxels[:, :3])
 
+        voxels = voxels.cpu().numpy()
         self.voxel_viewer.update_voxels(voxels[:, :3])
 
     def coll_env_callback(self, data):
