@@ -147,7 +147,8 @@ class CuroboTrajectoryNode(Node):
         self.torso_status = None
         self.torso_joint = ["torso_lift_joint"]
         self.saved_trajectory_stack = deque(maxlen=10)
-
+        
+        self.torso_js = None
         if self.nvblox:
             self.collision_env_sub = self.create_subscription(Bool, 'update_collision_env', self.udpate_env, 10, callback_group=MutuallyExclusiveCallbackGroup())
 
@@ -257,32 +258,49 @@ class CuroboTrajectoryNode(Node):
         request_pose = request.target_pose
         request_type = MotionType(int(request.traj_type.data))
         print(f"Request type: {request_type}")
+        initial_js = self.get_current_joint_positions() # List of joint positions
 
         if request_type == MotionType.TORSO_DOWN:
             torso_pose = Float64MultiArray()
             torso_pose.data = [float(0.054)]
+            ##################################
+            if self.torso_js is not None and np.allclose([float(0.054)], self.torso_js, atol=1e-2):
+                print("Already at target joint state.")
+                response.success = True
+                return response
+            ##################################
             self.torso_command.publish(torso_pose)
+
             print("Torso Moving Down")
             self.wait_for_torso()
+
+
             time.sleep(5)
             response.success = True
             return response
-        
+
         elif request_type == MotionType.TORSO_UP:
             torso_pose = Float64MultiArray()
-            torso_pose.data = [float(0.24)]
+            torso_pose.data = [float(0.15)]
+            ##################################
+            if self.torso_js is not None and np.allclose([float(0.15)], self.torso_js, atol=1e-2):
+                print("Already at target joint state.")
+                response.success = True
+                return response
+            ##################################
             self.torso_command.publish(torso_pose)
+
             print("Torso Moving Up")
+
             self.wait_for_torso()
+
             time.sleep(5)
             response.success = True
             return response
             
         print(f"Request pose: {request_pose.pose.position}")
 
-        self.curoboMotion.scale_velocity(1.0) # 100% Speed
-        
-        initial_js = self.get_current_joint_positions() # List of joint positions
+        self.curoboMotion.scale_velocity(1.0) # 100% Speed        
         
         if request_pose is None or initial_js is None:
             self.get_logger().error('Check the request pose and initial joint positions.')
@@ -339,7 +357,7 @@ class CuroboTrajectoryNode(Node):
         ####################################
 
         elif request_type == MotionType.BOX_IN:
-            self.curoboMotion.scale_velocity(1.0)
+            self.curoboMotion.scale_velocity(0.6)
             offset = 0.01
             self.curoboMotion.set_constraint()
             # self.curoboMotion.release_constraint()
@@ -410,7 +428,7 @@ class CuroboTrajectoryNode(Node):
                 return response
 
         else:
-            self.curoboMotion.scale_velocity(1.0)
+            # self.curoboMotion.scale_velocity(1.0)
             if request_type == MotionType.BOX_OUT or request_type == MotionType.SHELF_OUT:
                 initial_state = JointStateC.from_position(
                     position=self.curoboMotion.tensor_args.to_device(initial_js),
@@ -483,6 +501,8 @@ class CuroboTrajectoryNode(Node):
             self.save_trajectory(trajectory)
         # if request_type == MotionType.BOX_OUT:
         #     self.curoboMotion.create_and_attach_object(target_pose, initial_js)
+        print("Current values in stack: ", len(self.saved_trajectory_stack))
+
         response.success = True        
         print("Response success: True")
         return response
@@ -500,6 +520,7 @@ class CuroboTrajectoryNode(Node):
         target_array = np.array(target_position, dtype=np.float64)
 
         # Extract positions and ensure they are in a compatible format
+
         positions = solution_dict.get("positions", [])
         if not isinstance(positions, (list, np.ndarray)):
             raise ValueError(f"Invalid positions format: {type(positions)}. Expected list or ndarray.")

@@ -11,6 +11,7 @@ from omni.isaac.core import World
 from omni.isaac.core.utils.types import ArticulationAction
 import omni.graph.core as og
 import usdrt.Sdf
+from omni.isaac.core.objects import cuboid, sphere
 
 from helper import add_extensions, add_robot_to_scene, VoxelManager
 from curobo.geom.types import WorldConfig, Cuboid, Cylinder
@@ -24,12 +25,13 @@ from geometry_msgs.msg import Point
 # from omni.isaac.core.objects import DynamicMesh
 from omni.isaac.core.utils.stage import get_current_stage
 from pxr import UsdGeom, Vt
+from curobo.types.state import JointState as curoboJointState
 
 import numpy as np
 from typing import List
 import rclpy
 from rclpy.node import Node
-from temp_CuroboMotionPlanner import CuroboMotionPlanner
+from CuroboMotionPlanner import CuroboMotionPlanner
 from curobo.util_file import (
     get_robot_configs_path,
     get_world_configs_path,
@@ -42,6 +44,7 @@ from matplotlib import cm
 
 add_extensions(simulation_app) # Also enables ROS2
 curoboMotion = CuroboMotionPlanner("fetch.yml")
+curoboMotion.setup_motion_planner()  # Warmup happens here
 
 class IsaacSim(Node):
     def __init__(self):
@@ -67,7 +70,7 @@ class IsaacSim(Node):
         usd_help = UsdHelper()
 
         usd_help.load_stage(self.ros_world.stage)
-        usd_help.add_world_to_stage(world_cfg, base_frame="/World")
+        usd_help.add_world_to_stage(world_cfg.get_mesh_world(), base_frame="/World")
 
         self.robot, robot_prim_path = add_robot_to_scene(robot_cfg, self.ros_world)
         self.articulation_controller = self.robot.get_articulation_controller()
@@ -218,6 +221,7 @@ class IsaacSim(Node):
         self.robot._articulation_view.initialize()
         idx_list = [self.robot.get_dof_index(x) for x in self.j_names]
 
+        spheres = None
         self.robot.set_joint_positions(self.initial_state, idx_list)
         self.robot._articulation_view.set_max_efforts(
             values=np.array([5000 for i in range(len(idx_list))]), joint_indices=idx_list
@@ -245,20 +249,45 @@ class IsaacSim(Node):
                     joint_names_from_message = self.joint_name_msg  # Names in the JointTrajectory message
                     joint_names_robot = self.j_names  # Names of the robot's joints in Isaac Sim
 
+                    #####################################
+                    cu_js = curoboJointState(
+                        position=curoboMotion.tensor_args.to_device([positions]),
+                        joint_names=self.j_names[0 : len(positions)],
+                    )
+                    sph_list = curoboMotion.motion_gen.kinematics.get_robot_as_spheres(cu_js.position)
+                    if spheres is None:
+                        spheres = []
+                        # create spheres:
+
+                        for si, s in enumerate(sph_list[0]):
+                            sp = sphere.VisualSphere(
+                                prim_path="/curobo/robot_sphere_" + str(si),
+                                position=np.ravel(s.position),
+                                radius=float(s.radius),
+                                color=np.array([0, 0.8, 0.2]),
+                            )
+                            spheres.append(sp)
+                    else:
+                        for si, s in enumerate(sph_list[0]):
+                            if not np.isnan(s.position[0]):
+                                spheres[si].set_world_pose(position=np.ravel(s.position))
+                                spheres[si].set_radius(float(s.radius))
+                    #####################################
+
                     # Build idx_list to map the names in the message to Isaac Sim's internal order
                     idx_list = [joint_names_robot.index(name) for name in joint_names_from_message]
 
                     # Reorder the positions according to the idx_list (Isaac Sim joint order)
                     ordered_positions = [positions[idx] for idx in idx_list]
-                    
-
+ 
                     articulation_action = ArticulationAction(joint_positions=ordered_positions)
                     print(articulation_action.joint_positions)
 
                     self.articulation_controller.apply_action(articulation_action)
                     for _ in range(2):
                         self.ros_world.step(render=True)
-                
+                curoboMotion.detach_obj()
+
                 self.executing_traj = False
 
 
