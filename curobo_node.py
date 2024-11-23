@@ -164,6 +164,7 @@ class CuroboTrajectoryNode(Node):
         self.lock = threading.Lock()
         self.published_trajectory = None
         self.last_traj_point = None
+        self.reversed_traj = None
 
         self.get_logger().info('Curobo Trajectory Node has been started.')
 
@@ -185,6 +186,7 @@ class CuroboTrajectoryNode(Node):
                     break
             time.sleep(0.5)  # Sleep to prevent busy waiting
             self.get_logger().info("Robot is not idle.")
+
 
     def wait_for_torso(self):
         # Wait for the robot to become idle using the condition variable
@@ -256,41 +258,40 @@ class CuroboTrajectoryNode(Node):
         request_type = MotionType(int(request.traj_type.data))
         print(f"Request type: {request_type}")
 
-
         if request_type == MotionType.TORSO_DOWN:
             torso_pose = Float64MultiArray()
             torso_pose.data = [float(0.054)]
             self.torso_command.publish(torso_pose)
+            print("Torso Moving Down")
             self.wait_for_torso()
-            time.sleep(7)
-
+            time.sleep(5)
             response.success = True
             return response
+        
         elif request_type == MotionType.TORSO_UP:
             torso_pose = Float64MultiArray()
             torso_pose.data = [float(0.24)]
             self.torso_command.publish(torso_pose)
-            
+            print("Torso Moving Up")
             self.wait_for_torso()
-            time.sleep(7)
+            time.sleep(5)
             response.success = True
             return response
             
         print(f"Request pose: {request_pose.pose.position}")
-        # self.wait_for_idle()
-        # self.robot_status = Status.ACTIVE
-        #TODO: SLOWER JOINT VELOCITIES
-        self.curoboMotion.scale_velocity(1.0) # 50% Speed
+
+        self.curoboMotion.scale_velocity(1.0) # 100% Speed
         
         initial_js = self.get_current_joint_positions() # List of joint positions
         
         if request_pose is None or initial_js is None:
-            self.get_logger().error('Cannot generate trajectory without current joint positions.')
+            self.get_logger().error('Check the request pose and initial joint positions.')
             response.success = False
             self.published_trajectory = None
             return response
         
         target_pose = self.convert_pose_to_target_format(request_pose) # List: [x, y, z, w, x, y, z]
+
         if target_pose is None:
             self.get_logger().error('Failed to find a feasible IK solution. Check Reachability.')
             response.success = False
@@ -298,7 +299,7 @@ class CuroboTrajectoryNode(Node):
             return response
 
         if request_type == MotionType.FREESPACE:
-            offset = -0.20 # -Z offset w.r.t ee goal frame
+            offset = -0.25 # -Z offset w.r.t ee goal frame
             self.curoboMotion.release_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", True)
@@ -313,17 +314,30 @@ class CuroboTrajectoryNode(Node):
             self.curoboMotion.set_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
+        ##################################
+        # FOR BOX OUT AND SHELF OUT, USE REVERSED TRAJECTORY FROM PREVIOUS MOTION TYPE
         elif request_type == MotionType.BOX_OUT:
-            offset = -0.25
-            self.curoboMotion.set_constraint()
+            joint_trajectory_msg = self.create_joint_trajectory_message(self.reversed_traj)
+            self.publish_until_moving(joint_trajectory_msg)
+            self.wait_for_idle()       
+            
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
-                
+        
+            response.success = True
+            return response
         elif request_type == MotionType.SHELF_OUT:
-            offset = -0.20
-            self.curoboMotion.set_constraint()
+            joint_trajectory_msg = self.create_joint_trajectory_message(self.reversed_traj)
+            self.publish_until_moving(joint_trajectory_msg)
+            self.wait_for_idle()       
+            
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", False)
+        
+            response.success = True
+            return response
+        ####################################
+
         elif request_type == MotionType.BOX_IN:
             self.curoboMotion.scale_velocity(1.0)
             offset = 0.01
@@ -340,14 +354,12 @@ class CuroboTrajectoryNode(Node):
         elif request_type == MotionType.RANDOM:
             offset = 0.0
             self.curoboMotion.release_constraint()
-
         elif request_type == MotionType.HOME:
             offset = 0.0
             self.curoboMotion.release_constraint()
             if self.nvblox:
                 self.curoboMotion.world_model.enable_obstacle("world", True)
             target_js = self.curoboMotion.q_start
-
         elif request_type == MotionType.RESTOCK_HOME:
             offset = 0.0
             self.curoboMotion.release_constraint()
@@ -405,14 +417,13 @@ class CuroboTrajectoryNode(Node):
                     joint_names=self.j_names
                 )
 
-                initial_pose = self.curoboMotion.motion_gen.compute_kinematics(initial_state)
-                print(initial_pose.ee_pos_seq)
-                print(initial_pose.ee_quat_seq)
-
-                target_pose = initial_pose.ee_pos_seq.squeeze().cpu().tolist() + initial_pose.ee_quat_seq.squeeze().cpu().tolist() 
-                print(target_pose)
-                # target_pose.position = initial_pose.ee_pos + target_pose.pos
-                # target_pose.quaternion = initial_pose.ee_quat_seq
+            #     initial_pose = self.curoboMotion.motion_gen.compute_kinematics(initial_state)
+            #     # print(initial_pose.ee_pos_seq)
+            #     # print(initial_pose.ee_quat_seq)
+            #     target_pose = initial_pose.ee_pos_seq.squeeze().cpu().tolist() + initial_pose.ee_quat_seq.squeeze().cpu().tolist() 
+            #     # print(target_pose)
+            #     # target_pose.position = initial_pose.ee_pos + target_pose.pos
+            #     # target_pose.quaternion = initial_pose.ee_quat_seq
 
             target_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
 
@@ -421,8 +432,27 @@ class CuroboTrajectoryNode(Node):
                 goal_ee_pose=target_pose,
                 goal_js_pose=None,
             )
+
             time.sleep(1.0)
-        
+            if request_type == MotionType.BOX_IN or request_type == MotionType.SHELF_IN:
+                idx = self.find_position_in_solution(trajectory, self.last_traj_point)
+                print(idx)
+                print(len(trajectory["positions"]))
+                clipped_trajectory = {
+                    "positions": trajectory["positions"][:idx],
+                    "velocities": trajectory["velocities"][:idx],
+                    "accelerations": trajectory["accelerations"][:idx],
+                    "jerks": trajectory["jerks"][:idx],
+                    "interpolation_dt": trajectory["interpolation_dt"],
+                    "raw_data": trajectory["raw_data"],
+                }
+                clipped_trajectory["positions"].reverse()
+                clipped_trajectory["velocities"].reverse()
+                clipped_trajectory["accelerations"].reverse()
+                clipped_trajectory["jerks"].reverse()
+                
+                self.reversed_traj = clipped_trajectory
+
         if trajectory is None:
             self.get_logger().error('Failed to generate trajectory.')
             response.success = False
@@ -466,15 +496,31 @@ class CuroboTrajectoryNode(Node):
         :param tolerance: Tolerance for floating-point comparison.
         :return: Index of the matching position in the solution_dict, or -1 if not found.
         """
-        target_array = np.array(target_position)
-        positions = solution_dict["positions"]
+        # Convert target_position to a NumPy array
+        target_array = np.array(target_position, dtype=np.float64)
 
+        # Extract positions and ensure they are in a compatible format
+        positions = solution_dict.get("positions", [])
+        if not isinstance(positions, (list, np.ndarray)):
+            raise ValueError(f"Invalid positions format: {type(positions)}. Expected list or ndarray.")
+
+        # Ensure positions is a NumPy array
+        positions = np.asarray(positions, dtype=np.float64)
+
+        # Debug: Print shapes and types for verification
+        print(f"Target position array: {target_array}, shape: {target_array.shape}, dtype: {target_array.dtype}")
+        print(f"Positions array shape: {positions.shape}, dtype: {positions.dtype}")
+
+        # Loop through positions to find the closest match
         for i, pos in enumerate(positions):
-            print(i)
+            print(f"Checking position {i}: {pos}")
             if np.allclose(pos, target_array, atol=tolerance):
+                print(f"Match found at index {i}")
                 return i
 
-        return -1  # Return -1 if no match is found
+        # Return -1 if no match is found
+        print("No match found.")
+        return -1
     
     def save_trajectory(self, trajectory):
         ## revcerse trajectory lists and save in stack
