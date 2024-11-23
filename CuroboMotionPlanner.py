@@ -205,6 +205,7 @@ class CuroboMotionPlanner:
             rotation_threshold = 0.05,
             optimize_dt = True,
             # rotation_threshold=0.1,
+            trim_steps = [1,0],
         )
 
 
@@ -650,7 +651,8 @@ class CuroboMotionPlanner:
         else:
             raise ValueError("Check Goal EE Pose")
         
-        
+        optimized_dt = motion_gen_result.optimized_dt.cpu().item()
+        # optimized_dt.repeat(1, len(optimized_dt)) ### SOMETHING LIKE THIS TO REPEAT THE DTs WITH THE SAME LENGTH AS POSITIONS
         if reach_succ:      
             solution_dict = {
                 "success": motion_gen_result.success.item(),
@@ -662,6 +664,9 @@ class CuroboMotionPlanner:
                 "interpolation_dt": motion_gen_result.interpolation_dt,
                 "raw_data": interpolated_solution,
             }
+
+            # Generate the optimized_dt list with the same length as the "positions" list
+            solution_dict["optimized_dt"] = [optimized_dt] * len(solution_dict["positions"])
             
             return solution_dict
         
@@ -757,7 +762,8 @@ class CuroboMotionPlanner:
             return None
 
         
-        if reach_succ:      
+        if reach_succ:
+            # optimized_dt = motion_gen_result.optimized_dt.cpu().numpy().tolist()    
             solution_dict = {
                 "success": motion_gen_result.success.item(),
                 "joint_names": interpolated_solution.joint_names,

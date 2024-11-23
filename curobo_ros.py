@@ -17,15 +17,17 @@ from std_msgs.msg import Header
 from enum import Enum
 from orbiter_bt.srv import MoveArm
 import time
-from copy import deepcopy
+
+from collections import deque
+
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState, Image, CameraInfo
 # Import curobo utilities (update these imports as needed)
 from curobo.util_file import get_robot_configs_path, get_assets_path
 # Import your CuroboMotionPlanner class
-from CuroboMotionPlanner2 import CuroboMotionPlanner
+from CuroboMotionPlanner import CuroboMotionPlanner
 from curobo.types.state import JointState as JointStateC
-# from fetch_camera import CameraLoader
+from fetch_camera import CameraLoader
 from std_msgs.msg import Float32MultiArray
 from curobo.types.math import Pose as PoseC
 from curobo.geom.types import Cuboid
@@ -48,6 +50,9 @@ class MotionType(Enum):
     BOX = 10
     FREESPACE_ARUCO = 11
     DROP_IN = 12
+    REVERSE = 13
+    PICK_FROM_B0X = 14
+    PLACE_TO_BIN = 15
 
 class Status(Enum):
     PENDING = 0
@@ -143,7 +148,21 @@ class CuroboTrajectoryNode(Node):
         self.robot_status = None
         self.torso_status = None
         self.torso_joint = ["torso_lift_joint"]
+        self.saved_trajectory_stack = deque(maxlen=10)
+        
+        self.torso_js = None
+        if self.nvblox:
+            self.collision_env_sub = self.create_subscription(Bool, 'update_collision_env', self.udpate_env, 10, callback_group=MutuallyExclusiveCallbackGroup())
 
+            self.voxel_pub = self.create_publisher(Float32MultiArray, 'voxel_array', 10)
+            self.mesh_pub = self.create_publisher(Mesh, 'mesh', 10)
+            ## TODO: Replace continous subsription with invoked subscription for lower network load
+            self.cam = CameraLoader(self)
+            self.create_subscription( Image, '/head_camera/rgb/image_raw', self.cam.rgb_callback, 1, callback_group=MutuallyExclusiveCallbackGroup())
+            self.create_subscription( Image, '/head_camera/depth/image_rect_raw', self.cam.depth_callback,1, callback_group=MutuallyExclusiveCallbackGroup() )
+            # self.create_subscription( Pose, '/camera/pose', self.pose_callback)
+            self.create_subscription( CameraInfo, '/head_camera/rgb/camera_info', self.cam.intrinsics_callback, 1, callback_group=MutuallyExclusiveCallbackGroup())
+            self.cam.set_fetch_camera_pose()
                 
         self.lock = threading.Lock()
         self.published_trajectory = None
@@ -155,6 +174,8 @@ class CuroboTrajectoryNode(Node):
     def last_traj_callback(self, msg):
         with self.lock:
             self.last_traj_point = msg.positions
+            # print(msg)
+            print(msg.positions)
 
     def udpate_env(self, msg):
         self.update_collision_world(persist = msg.data)
@@ -168,6 +189,7 @@ class CuroboTrajectoryNode(Node):
                     break
             time.sleep(0.5)  # Sleep to prevent busy waiting
             self.get_logger().info("Robot is not idle.")
+
 
     def wait_for_torso(self):
         # Wait for the robot to become idle using the condition variable
@@ -183,6 +205,7 @@ class CuroboTrajectoryNode(Node):
         if self.gripper_status != msg.data:
             # print(f"Changed gripper status: {msg.data}")
             self.gripper_status = msg.data
+
     def torso_status_callback(self, msg):
         with self.lock:
             self.torso_status = Status(msg.data)
@@ -232,30 +255,79 @@ class CuroboTrajectoryNode(Node):
             time.sleep(0.5)  # Sleep to prevent busy waiting
             self.get_logger().info("Waiting for robot to receive message")
 
+    def check_trajectory(self, trajectory):
+        if trajectory is None:
+            self.get_logger().error('Failed to generate trajectory.')
+            return False
+        return True
+
+    def command_torso(self, torso_position):
+        torso_pose = Float64MultiArray()
+        torso_pose.data = [float(torso_position)]
+        self.torso_command.publish(torso_pose)
+        print("Torso Moving to: ", torso_position)
+        self.wait_for_torso()
+        time.sleep(4)
+
     def target_pose_callback(self, request, response):
         response.success = False
         request_pose = request.target_pose
+        print(f"Request pose: {request_pose.pose.position}")
         request_type = MotionType(int(request.traj_type.data))
         print(f"Request type: {request_type}")
-        print(f"Request position: {request_pose.pose.position}")
-        print(f"Request orientation: {request_pose.pose.orientation}")
         initial_js = self.get_current_joint_positions() # List of joint positions
-        pose = JointStateC.from_position(
-                position=self.curoboMotion.tensor_args.to_device(initial_js),
-                joint_names=self.j_names[0 : len(initial_js)],
-            )
-        initial_pose = self.curoboMotion.motion_gen.compute_kinematics(pose)
-        print("initial pose: ")
-        print(initial_pose.ee_pos_seq[0].cpu().numpy().tolist() + initial_pose.ee_quat_seq[0].cpu().numpy().tolist())
-    
-        # print(f"Initial Pose: {initial_pose}")
+        self.curoboMotion.scale_velocity(1.0) # 100% Speed        
+
+        if request_type == MotionType.TORSO_DOWN:
+            torso_position = 0.054
+            ##################################
+            if self.torso_js is not None and np.allclose([float(torso_position)], self.torso_js, atol=1e-2):
+                print("Already at target joint state.")
+                response.success = True
+                return response
+            ##################################
+            self.command_torso(torso_position)
+            response.success = True
+            return response
+
+        elif request_type == MotionType.TORSO_UP:
+            torso_position = 0.15
+            ##################################
+            if self.torso_js is not None and np.allclose([float(torso_position)], self.torso_js, atol=1e-2):
+                print("Already at target joint state.")
+                response.success = True
+                return response
+            ##################################
+            self.command_torso(torso_position)
+            response.success = True
+            return response
+        elif request_type == MotionType.REVERSE:
+            try:
+                trajectory = self.saved_trajectory_stack.pop()
+                joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
+                self.publish_until_moving(joint_trajectory_msg)
+                self.wait_for_idle()       
+            
+                trajectory = self.saved_trajectory_stack.pop()
+                self.get_logger().info("Response success: True")
+                response.success = True
+                return response
+            
+            except IndexError:
+                self.get_logger().error("No trajectory to reverse.")
+                self.published_trajectory = None
+                response.success = False
+                return response
+        
         if request_pose is None or initial_js is None:
             self.get_logger().error('Check the request pose and initial joint positions.')
             response.success = False
             self.published_trajectory = None
             return response
-        
-        target_pose = self.convert_pose_to_target_format(request_pose) # List: [x, y, z, qw, qx, qy, qz]
+
+        self.start_js = initial_js
+
+        target_pose = self.convert_pose_to_target_format(request_pose) # List: [x, y, z, w, x, y, z]
 
         if target_pose is None:
             self.get_logger().error('Failed to find a feasible IK solution. Check Reachability.')
@@ -263,147 +335,68 @@ class CuroboTrajectoryNode(Node):
             self.published_trajectory = None
             return response
 
-        offset = 0.0
-        if request_type == MotionType.FREESPACE:
-            offset = -0.25 # -Z offset w.r.t ee goal frame
-            self.curoboMotion.release_constraint()
-            potential_poses = self.curoboMotion.generate_yaw_poses(target_pose)
-            print(potential_poses)
-            n_succ, target_pose = self.curoboMotion.compute_kinematics_batch(initial_js, potential_poses)
-            print("Number of successful poses: ", n_succ)
-            # print("Best Pose: ", target_pose)
-            
-        elif request_type == MotionType.FREESPACE_ARUCO:
+        if request_type == MotionType.PICK_FROM_B0X:
+            offset = -0.25
+            goal_offset = 0.01
+        elif request_type == MotionType.PLACE_TO_BIN:
             offset = -0.32
-            self.curoboMotion.release_constraint()
-            potential_poses = self.curoboMotion.generate_yaw_poses(target_pose)
-            n_succ, target_pose = self.curoboMotion.compute_kinematics_batch(initial_js, potential_poses)
-            print("Number of successful poses: ", n_succ)
-            # print("Best Pose: ", target_pose)
-        elif request_type == MotionType.BOX_IN:
-            self.curoboMotion.scale_velocity(0.5)
-            offset = 0.01
-            self.curoboMotion.set_constraint()
-            # self.curoboMotion.release_constraint()
-        elif request_type == MotionType.SHELF_IN:
-            self.curoboMotion.scale_velocity(0.6)
-            offset = 0.02
-            self.curoboMotion.set_constraint()
-        elif request_type == MotionType.DROP_IN:
-            offset = -0.10
-            self.curoboMotion.set_constraint()
-        elif request_type == MotionType.BOX_OUT or request_type == MotionType.SHELF_OUT:
-            joint_trajectory_msg = self.create_joint_trajectory_message(self.reversed_traj)
-            # self.publish_until_moving(joint_trajectory_msg)
-            # self.wait_for_idle()
-            self.trajectory_publisher.publish(joint_trajectory_msg)
-            response.success = True
-            return response
-        elif request_type == MotionType.RESTOCK_HOME:
-            offset = 0.0
-            self.curoboMotion.release_constraint()
-            if self.nvblox:
-                self.curoboMotion.world_model.enable_obstacle("world", True)
-            target_js = [0.04053, 1.4964325, -3.116786, 1.518171482376709, 0.00017877879488468335, 1.6613113543554687, -0.0004807466445803637]
-
-        else:
-            self.get_logger().error('Invalid trajectory type.')
+            goal_offset = -0.10
+        ##################### PLAN FROM INITIAL TO FREESPACE #####################
+        waypoint_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset)
+        self.curoboMotion.release_constraint()
+        waypoint_trajectory = self.curoboMotion.generate_trajectory(
+            initial_js=initial_js,
+            goal_ee_pose=waypoint_pose,
+            goal_js_pose=None,
+        )
+        if not self.check_trajectory(waypoint_trajectory):
+            print("Failed initial to waypoint")
             response.success = False
-            self.published_trajectory = None
             return response
+        ##########################################################################
 
-        intermediary_pose = self.curoboMotion.compute_intermediary_pose(target_pose, offset) # List: [x, y, z, qw, qx, qy, qz]
+        ##################### PLAN FROM FREESPACE TO IN #####################          
+        last_js = waypoint_trajectory["positions"][-1] # List Type
+        self.curoboMotion.scale_velocity(0.6)
+        self.curoboMotion.set_constraint()
+        final_pose = self.curoboMotion.compute_intermediary_pose(target_pose, goal_offset)
+        target_trajectory = self.curoboMotion.generate_trajectory(
+            initial_js=last_js,
+            goal_ee_pose=final_pose,
+            goal_js_pose=None,
+        )
 
-        intermediary_ik, goal_ik = self.curoboMotion.ik_goal_generator(initial_js, intermediary_pose, target_pose)
-        if intermediary_ik is None or goal_ik is None:
-            self.get_logger().error('Failed to find a feasible IK solution. Check Reachability.')
+        if not self.check_trajectory(target_trajectory):
+            print("Failed wapoint to target")
             response.success = False
-            self.published_trajectory = None
             return response
+        ##########################################################################
         
-        print("Start Planning Trajectory")
-        if request_type == MotionType.BOX_IN or request_type == MotionType.SHELF_IN or request_type == MotionType.DROP_IN:
-            trajectory = self.curoboMotion.generate_trajectory(
-                initial_js=initial_js,
-                goal_ee_pose=target_pose,
-                goal_js_pose=None,
-            )
-            if trajectory is None:
-                self.get_logger().error('Failed to generate trajectory.')
-                response.success = False
-                self.published_trajectory = None
-                return response
-            self.reversed_traj = deepcopy(trajectory)
-            self.reversed_traj["positions"].reverse()
-            self.reversed_traj["velocities"] = [
-                [-v for v in velocity] for velocity in reversed(trajectory["velocities"])
-            ]
+            # TODO: Make optimized_dt a list of values for each segment
+            # Edit solutions dict from CuroboMotionPlanner to make optimized_dt a list for each trajectory
+            # point is to take into account the different dt values for each segment
+            # so that when ee reaches into the box it slows down (2 different speeds)
+        final_trajectory = {
+            "positions": waypoint_trajectory["positions"] + target_trajectory["positions"],
+            "velocities": waypoint_trajectory["velocities"] + target_trajectory["velocities"],
+            "accelerations": waypoint_trajectory["accelerations"] + target_trajectory["accelerations"],
+            "optimized_dt": waypoint_trajectory["optimized_dt"] + target_trajectory["optimized_dt"]
+        }
 
-# Reverse the accelerations and multiply by -1
-            self.reversed_traj["accelerations"] = [
-                [-a for a in acceleration] for acceleration in reversed(trajectory["accelerations"])
-            ]
-
-            # if request_type == MotionType.DROP_IN:
-            #     self.reversed_traj = trajectory["positions"].reverse()
-            # else:
-            #     preempt_idx = self.find_position_in_solution(trajectory, self.last_traj_point)
-            #     clipped_trajectory = {
-            #         "positions": trajectory["positions"][:preempt_idx],
-            #         "velocities": trajectory["velocities"][:preempt_idx],
-            #         "accelerations": trajectory["accelerations"][:preempt_idx],
-            #         "jerks": trajectory["jerks"][:preempt_idx],
-            #         "interpolation_dt": trajectory["interpolation_dt"],
-            #         "raw_data": trajectory["raw_data"],
-            #     }
-            #     clipped_trajectory["positions"].reverse()
-            #     clipped_trajectory["velocities"].reverse()
-            #     clipped_trajectory["accelerations"].reverse()
-            #     clipped_trajectory["jerks"].reverse()
-                
-            #     self.reversed_traj = clipped_trajectory
-        elif request_type in [MotionType.FREESPACE, MotionType.FREESPACE_ARUCO]:
-            trajectory = self.curoboMotion.generate_trajectory(
-                initial_js=initial_js,
-                goal_ee_pose=None,
-                goal_js_pose=intermediary_ik,
-            )
-        elif request_type == MotionType.RESTOCK_HOME:
-            trajectory = self.curoboMotion.generate_trajectory(
-                initial_js=initial_js,
-                goal_ee_pose=None,
-                goal_js_pose=target_js,
-            )
-           
-        if trajectory is None:
-            self.get_logger().error('Failed to generate trajectory.')
-            response.success = False
-            self.published_trajectory = None
-            return response
-        
-        joint_trajectory_msg = self.create_joint_trajectory_message(trajectory)
+        joint_trajectory_msg = self.create_joint_trajectory_message(final_trajectory)
         self.published_trajectory = joint_trajectory_msg
-        # print(self.published_trajectory)
-        # self.publish_until_moving(joint_trajectory_msg)
-        self.trajectory_publisher.publish(joint_trajectory_msg)
-    
-        # self.trajectory_publisher.publish(joint_trajectory_msg)
-        self.start_js = initial_js
-
-        # self.get_logger().info('Published joint trajectory.')
-        response.success = True
-        time.sleep(1)
-        self.get_logger().info("Response success: True")
-
+        self.publish_until_moving(joint_trajectory_msg)
         self.wait_for_idle()
+        self.get_logger().info("Response success: True")
+            
+        self.save_trajectory(final_trajectory)
+        print("Current values in stack: ", len(self.saved_trajectory_stack))
 
-        # if request_type == MotionType.BOX_OUT:
-        #     self.curoboMotion.create_and_attach_object(target_pose, initial_js)
-        response.success = True        
-        print("Response success: True")
+        response.success = True
         return response
+
     
-    def find_position_in_solution(self, solution_dict, target_position, tolerance=1e-3):
+    def find_position_in_solution(self, solution_dict, target_position, tolerance=1e-1):
         """
         Finds the index of a target position in the solution dictionary's positions list.
 
@@ -412,15 +405,66 @@ class CuroboTrajectoryNode(Node):
         :param tolerance: Tolerance for floating-point comparison.
         :return: Index of the matching position in the solution_dict, or -1 if not found.
         """
-        target_array = np.array(target_position)
-        positions = solution_dict["positions"]
+        # Convert target_position to a NumPy array
+        target_array = np.array(target_position, dtype=np.float64)
 
+        # Extract positions and ensure they are in a compatible format
+
+        positions = solution_dict.get("positions", [])
+        if not isinstance(positions, (list, np.ndarray)):
+            raise ValueError(f"Invalid positions format: {type(positions)}. Expected list or ndarray.")
+
+        # Ensure positions is a NumPy array
+        positions = np.asarray(positions, dtype=np.float64)
+
+        # Debug: Print shapes and types for verification
+        print(f"Target position array: {target_array}, shape: {target_array.shape}, dtype: {target_array.dtype}")
+        print(f"Positions array shape: {positions.shape}, dtype: {positions.dtype}")
+
+        # Loop through positions to find the closest match
         for i, pos in enumerate(positions):
+            print(f"Checking position {i}: {pos}")
             if np.allclose(pos, target_array, atol=tolerance):
+                print(f"Match found at index {i}")
                 return i
 
-        return -1  # Return -1 if no match is found
+        # Return -1 if no match is found
+        print("No match found.")
+        return -1
     
+    def save_trajectory(self, trajectory):
+        ## revcerse trajectory lists and save in stack
+        # reversed_trajectory = trajectory.copy()
+        print("last_traj_point: ", self.last_traj_point)
+        print("trajectory length: ", len(trajectory["positions"]))
+        # print("trajectory raw: ", trajectory["positions"])
+
+        if self.last_traj_point is not None:
+            idx = self.find_position_in_solution(trajectory, self.last_traj_point)
+            print("stopped at traj idx: ", idx)
+            # print(len(trajectory["positions"]))
+            clipped_trajectory = {
+                "positions": trajectory["positions"][:idx],
+                "velocities": trajectory["velocities"][:idx],
+                "accelerations": trajectory["accelerations"][:idx],
+                "interpolation_dt": trajectory["interpolation_dt"][:idx]
+            }
+            trajectory = clipped_trajectory
+            self.last_traj_point = None
+
+        trajectory["positions"].reverse()
+        trajectory["velocities"] = [
+                [-v for v in velocity] for velocity in reversed(trajectory["velocities"])
+            ]
+        trajectory["accelerations"] = [
+                [-a for a in acceleration] for acceleration in reversed(trajectory["accelerations"])
+            ]
+
+        self.saved_trajectory_stack.append(trajectory)
+        print("Saved Reverse Trajectory")
+        print("Current values in stack: ", len(self.saved_trajectory_stack))
+        # print("Traj:: ", trajectory["positions"])
+
     @staticmethod
     def convert_pose_to_target_format(pose_msg):
         # Extract the pose from PoseStamped
@@ -449,7 +493,7 @@ class CuroboTrajectoryNode(Node):
         positions_list = trajectory.get('positions', [])
         velocities_list = trajectory.get('velocities', [])
         accelerations_list = trajectory.get('accelerations', [])
-        interpolation_dt = trajectory.get('interpolation_dt', 0.1)
+        interpolation_dt = trajectory.get('optimized_dt', [])
 
         # Initialize time_from_start
         time_from_start = 0.0
@@ -471,7 +515,7 @@ class CuroboTrajectoryNode(Node):
             traj_point.accelerations = accelerations
 
             # Set time_from_start
-            time_from_start += interpolation_dt
+            time_from_start += interpolation_dt[idx]
             traj_point.time_from_start = rclpy.duration.Duration(seconds=time_from_start).to_msg()
 
             # Append the trajectory point to the message
@@ -481,6 +525,65 @@ class CuroboTrajectoryNode(Node):
 
         return joint_trajectory_msg
     
+    def update_collision_world(self, persist):
+        self.cam.set_fetch_camera_pose()
+        self.camera_data = self.cam.get_data()
+        # print("Camera Data : ", self.camera_data)
+        if self.camera_data is None:
+            raise ValueError('Camera data not available.')
+        # add in robot planning base frame - should be a constant or can get from tf
+        camera_position = self.camera_data['pose']['position'] #[0,0,0]
+        camera_orientation = self.camera_data['pose']['orientation'] #[0,0,0,1]
+        self.camera_pose = PoseC(
+            position=self.curoboMotion.tensor_args.to_device(camera_position),
+            quaternion=self.curoboMotion.tensor_args.to_device(camera_orientation), normalize_rotation=True
+            )
+        voxels, mesh = self.curoboMotion.update_blox_from_camera(self.camera_data, self.camera_pose, persist)
+        # print("Mesh :: ", mesh)
+        if voxels is not None:
+            self.publish_voxel_array(voxels.cpu().numpy())
+        if mesh is not None:
+            self.publish_mesh_array(mesh)
+        
+    def publish_voxel_array(self, voxels):
+        # Ensure voxels is in (N, 3) format for [x, y, z] coordinates
+        if voxels.shape[1] < 3:
+            self.get_logger().error("Voxel data must be in (N, 3) format.")
+            return
+
+        # Flatten the voxel data into a single list [x1, y1, z1, x2, y2, z2, ...]
+        flat_voxel_data = voxels[:, :3].flatten().astype(np.float32).tolist()
+
+        # Create and populate the Float32MultiArray message
+        voxel_array_msg = Float32MultiArray()
+        voxel_array_msg.data = flat_voxel_data
+
+        # Publish the Float32MultiArray message
+        self.voxel_pub.publish(voxel_array_msg)
+        self.get_logger().info(f"Published {voxels.shape[0]} voxels as Float32MultiArray.")
+
+    def publish_mesh_array(self, mesh):
+        ros_mesh = Mesh()
+
+        # Convert vertices to geometry_msgs/Point format
+        for vertex in mesh.vertices:
+            point = Point(x=float(vertex[0]), y=float(vertex[1]), z=float(vertex[2]))
+            ros_mesh.vertices.append(point)
+
+        # Convert faces to MeshTriangle format
+        for face in mesh.faces:
+            triangle = MeshTriangle(vertex_indices=[int(face[0]), int(face[1]), int(face[2])])
+            ros_mesh.triangles.append(triangle)
+
+        self.mesh_pub.publish(ros_mesh)
+        self.get_logger().info(f"Published mesh with {len(ros_mesh.vertices)} vertices and {len(ros_mesh.triangles)} triangles.")
+
+    def debug_loop(self):
+        while rclpy.ok():
+            print("In Debug Loop")
+            target_pose_cuboid = Cuboid("t_pose", dims=[3, 3, 5.0], pose=[0, 0, 0, 1, 0, 0, 0])
+            self.update_collision_world(persist=True)
+            time.sleep(0.5)
 
 if __name__ == "__main__":
     rclpy.init()
@@ -492,6 +595,9 @@ if __name__ == "__main__":
     
     try:
         # Spin the executor to manage callbacks with multiple threads
+        if curobo_node.debug:
+            curobo_node.debug_thread = threading.Thread(target=curobo_node.debug_loop)
+            curobo_node.debug_thread.start()
 
         executor.spin()
 
